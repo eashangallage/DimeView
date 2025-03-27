@@ -1,4 +1,4 @@
-_pycache_
+__pycache__/
 ap*
 creds1.json
 creds20250101.json
