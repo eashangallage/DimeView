@@ -110,6 +110,7 @@ class Controller:
             # self.start_window.update_spreadsheets(result)
         else:
             print("No spreadsheets found or an error occurred.")
+            return 
         self.start_window.show()
 
     def submit_spreadsheet(self, spreadsheet):
@@ -123,6 +124,7 @@ class Controller:
             print("Too many windows open. Exiting submit_spreadsheet.")  # Optional message
             return  # Exit the function
         
+        self.start_window.close()
         self.loading_screen.show()
         
         # Increment the counter to assign a new unique ID
@@ -228,9 +230,14 @@ class Controller:
         csv_window = CSVWindow(formatted_df, key, self)
         self.csv_windows[key] = csv_window
 
+        # # self.cleanup_main_window(self.temp_unique_id)
+
         # Connect the MainWindow's close event to a cleanup function
         csv_window.aboutToClose.connect(lambda: self.cleanup_csv_window(key))
         csv_window.show()
+
+        self.main_windows[self.temp_unique_id].close()
+
     
     def save_data(self, csv_window_key, file_path, option):
 

@@ -82,37 +82,37 @@ class LoadingScreen(QMainWindow):
         self.setCentralWidget(central_widget)
 
 
-class ExpenseReportGUI(QWidget):
-    def __init__(self):
-        super().__init__()
-        layout = QGridLayout()
-        layout.addWidget(QLabel("Expense Date:"), 0, 0)
-        layout.addWidget(QLineEdit(), 0, 1)
-        layout.addWidget(QLabel("Amount:"), 1, 0)
-        layout.addWidget(QLineEdit(), 1, 1)
-        self.setLayout(layout)
-        self.setWindowTitle("Expense Report")
+# class ExpenseReportGUI(QWidget):
+#     def __init__(self):
+#         super().__init__()
+#         layout = QGridLayout()
+#         layout.addWidget(QLabel("Expense Date:"), 0, 0)
+#         layout.addWidget(QLineEdit(), 0, 1)
+#         layout.addWidget(QLabel("Amount:"), 1, 0)
+#         layout.addWidget(QLineEdit(), 1, 1)
+#         self.setLayout(layout)
+#         self.setWindowTitle("Expense Report")
 
 
-class DetailsGUI(QWidget):
-    def __init__(self):
-        super().__init__()
-        layout = QVBoxLayout()
-        layout.addWidget(QLabel("Details will be shown here."))
-        self.setLayout(layout)
-        self.setWindowTitle("Details")
+# class DetailsGUI(QWidget):
+#     def __init__(self):
+#         super().__init__()
+#         layout = QVBoxLayout()
+#         layout.addWidget(QLabel("Details will be shown here."))
+#         self.setLayout(layout)
+#         self.setWindowTitle("Details")
 
 
-class InvoiceGUI(QWidget):
-    def __init__(self):
-        super().__init__()
-        layout = QGridLayout()
-        layout.addWidget(QLabel("Invoice Number:"), 0, 0)
-        layout.addWidget(QLineEdit(), 0, 1)
-        layout.addWidget(QLabel("Client:"), 1, 0)
-        layout.addWidget(QLineEdit(), 1, 1)
-        self.setLayout(layout)
-        self.setWindowTitle("Invoice Entry")
+# class InvoiceGUI(QWidget):
+#     def __init__(self):
+#         super().__init__()
+#         layout = QGridLayout()
+#         layout.addWidget(QLabel("Invoice Number:"), 0, 0)
+#         layout.addWidget(QLineEdit(), 0, 1)
+#         layout.addWidget(QLabel("Client:"), 1, 0)
+#         layout.addWidget(QLineEdit(), 1, 1)
+#         self.setLayout(layout)
+#         self.setWindowTitle("Invoice Entry")
 
 
 class CSVWindow(QMainWindow):
@@ -259,14 +259,14 @@ class MainWindow(QMainWindow):
             _frame = self.create_section(key, value)
             sections_layout.addWidget(_frame)
 
-        self.expense_gui = ExpenseReportGUI()
-        self.details_gui = DetailsGUI()
-        self.invoice_gui = EnterInvoice()
+        # self.expense_gui = ExpenseReportGUI()
+        # self.details_gui = DetailsGUI()
+        # self.invoice_gui = EnterInvoice()
 
         # Buttons Layout
         buttons_layout = QHBoxLayout()
         main_layout.addLayout(buttons_layout)
-        guis = [self.expense_gui, self.details_gui, self.invoice_gui]
+        # guis = [self.expense_gui, self.details_gui, self.invoice_gui]
 
         # Buttons
         button_names = ["Create Expense Report", "Show Details", "Enter Invoice"]

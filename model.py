@@ -32,7 +32,7 @@ class ConnectAPI:
             'https://spreadsheets.google.com/feeds',
             'https://www.googleapis.com/auth/drive'
             ]
-        self.credentials = Credentials.from_service_account_file("creds1.json", scopes=self.scopes)
+        self.credentials = Credentials.from_service_account_file("creds/MoneyMirrorCreds.json", scopes=self.scopes)
         self.spreadsheet_list = []
 
     def main(self):
@@ -414,7 +414,8 @@ class Model:
 
         # Apply the function to each row
         self.dfMain["Expense"] = self.dfMain.apply(get_expense, axis=1)
-        self.available_expenses = list(set(self.dfMain["Expense"]))
+        # self.available_expenses = list(set(self.dfMain["Expense"]))
+        self.available_expenses = sorted(set(self.dfMain["Expense"]))
 
     
     def main(self):
