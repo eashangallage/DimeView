@@ -1,47 +1,50 @@
-name: Build & Package Windows
+name: Build Windows Installer
 
+# Trigger on pushes to main (or manually via workflow_dispatch)
 on:
   push:
-    branches: [ "debian" ]
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
-  build-windows:
+  build-installer:
     runs-on: windows-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Python 3.12
+      - name: Set up Python 3.12
         uses: actions/setup-python@v4
         with:
           python-version: '3.12'
 
-      - name: Install dependencies
+      - name: Install dependencies & PyInstaller
         run: |
-          python -m venv venv
-          # Correctly call pip from within the venv to install your project and PyInstaller
-          .\venv\Scripts\python.exe -m pip install --upgrade pip
-          .\venv\Scripts\pip.exe install .
-          .\venv\Scripts\pip.exe install pyinstaller
+          python -m pip install --upgrade pip
+          pip install .
+          pip install pyinstaller
 
-      - name: Run PyInstaller
-        # Correctly call PyInstaller from within the venv using your .spec file
-        run: .\venv\Scripts\pyinstaller.exe moneymirror.spec
-        
-      - name: Create NSIS Installer
-        # This single action installs and runs NSIS for you
-        uses: joncloud/makensis-action@v4
-        with:
-          # Make sure this path points to your NSIS script
-          script-file: scripts/installer.nsi
+      - name: Build application with PyInstaller
+        run: |
+          pyinstaller \
+            --name moneymirror \
+            --onedir \
+            --windowed \
+            --add-data "src/moneymirror/resources;resources" \
+            src/moneymirror/main.py
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+      - name: Install NSIS
+        run: choco install nsis -y
+
+      - name: Compile NSIS installer
+        run: |
+          makensis.exe -V2 scripts/installer.nsi
+
+      - name: Upload Installer Artifact
+        uses: actions/upload-artifact@v3
         with:
-          name: windows-moneymirror
-          # This correctly uploads both the final installer and the raw build output
+          name: MoneyMirror-Windows-Installer
           path: |
-            dist/moneymirror/
-            output/MoneyMirror-Setup.exe
+            "${{ github.workspace }}\MoneyMirror-Setup-*.exe"

@@ -1,47 +1,50 @@
-# --- Application Metadata ---
-!define APP_NAME "MoneyMirror"
-!define APP_EXE  "moneymirror.exe"
-!define VERSION "1.0.0"
-
-# --- Source & Output Files ---
-# Use the GITHUB_WORKSPACE variable to create an absolute path to the PyInstaller output
-!define SRC_DIR  "${GITHUB_WORKSPACE}\dist"
-!define OUT_FILE "${GITHUB_WORKSPACE}\dist\MoneyMirror-Setup.exe"
-
-# --- Installer Settings ---
-RequestExecutionLevel admin
-InstallDir "$PROGRAMFILES64\${APP_NAME}"
-OutFile "${OUT_FILE}"
-
-# --- Modern User Interface ---
 !include "MUI2.nsh"
-!insertmacro MUI_PAGE_WELCOME
+
+;--------------------------------
+; Product metadata
+!define PRODUCT_NAME    "MoneyMirror"
+!define PRODUCT_VERSION "1.0.0"
+!define INSTALLER_NAME  "${PRODUCT_NAME}-Setup-${PRODUCT_VERSION}.exe"
+
+;--------------------------------
+Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"
+OutFile "dist\\${INSTALLER_NAME}"
+InstallDir "$PROGRAMFILES\\${PRODUCT_NAME}"
+InstallDirRegKey HKLM "Software\\${PRODUCT_NAME}" "Install_Dir"
+
+;--------------------------------
+; Pages
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
-!insertmacro MUI_PAGE_FINISH
+!insertmacro MUI_UNPAGE_INSTFILES
+
+;--------------------------------
+; Languages
 !insertmacro MUI_LANGUAGE "English"
 
-# --- Installation Section ---
+;--------------------------------
 Section "Install"
+  ; where to put files
   SetOutPath "$INSTDIR"
-  File /r "${SRC_DIR}\*.*"
 
-  # --- Create Uninstaller ---
-  WriteUninstaller "$INSTDIR\uninstall.exe"
+  ; copy entire dist\moneymirror directory
+  File /r "dist\\moneymirror\\*.*"
 
-  # --- Create Shortcuts ---
-  CreateDirectory "$SMPROGRAMS\${APP_NAME}"
-  CreateShortCut "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}"
-  CreateShortCut "$DESKTOP\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}"
+  ; record install location in registry
+  WriteRegStr HKLM "Software\\${PRODUCT_NAME}" "Install_Dir" "$INSTDIR"
+
+  ; write uninstaller
+  WriteUninstaller "$INSTDIR\\Uninstall.exe"
 SectionEnd
 
-# --- Uninstallation Section ---
+;--------------------------------
 Section "Uninstall"
-  # Remove files and directories
-  Delete "$INSTDIR\uninstall.exe"
+  ; remove registry key
+  DeleteRegKey HKLM "Software\\${PRODUCT_NAME}"
+
+  ; remove installed files and directories
   RMDir /r "$INSTDIR"
 
-  # Remove shortcuts
-  Delete "$DESKTOP\${APP_NAME}.lnk"
-  RMDir /r "$SMPROGRAMS\${APP_NAME}"
+  ; remove uninstaller
+  Delete "$INSTDIR\\Uninstall.exe"
 SectionEnd
