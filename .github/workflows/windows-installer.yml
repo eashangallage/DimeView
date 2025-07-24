@@ -2,7 +2,7 @@ name: Build & Package Windows
 
 on:
   push:
-    branches: [ debian ]
+    branches: [ "debian" ]
   workflow_dispatch:
 
 jobs:
@@ -14,41 +14,34 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Python 3.12
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - name: Install package & PyInstaller
+      - name: Install dependencies
         run: |
           python -m venv venv
-          .\venv\Scripts\Activate.ps1
-          pip install -e .
-          pip install pyinstaller
+          # Correctly call pip from within the venv to install your project and PyInstaller
+          .\venv\Scripts\python.exe -m pip install --upgrade pip
+          .\venv\Scripts\pip.exe install .
+          .\venv\Scripts\pip.exe install pyinstaller
 
       - name: Run PyInstaller
-        run: |
-          .\venv\Scripts\Activate.ps1
-          pyinstaller --name moneymirror `
-                      --onedir `
-                      --windowed `
-                      --add-data "src/moneymirror/resources;resources" `
-                      src\moneymirror\main.py
-
-      - name: Install NSIS
-        run: choco install nsis --no-progress
-
+        # Correctly call PyInstaller from within the venv using your .spec file
+        run: .\venv\Scripts\pyinstaller.exe moneymirror.spec
+        
       - name: Create NSIS Installer
-        run: |
-          # Make sure output directory exists
-          if (!(Test-Path output)) { New-Item -ItemType Directory -Path output }
-
-          # Call makensis.exe via the "&" operator
-          & 'C:\Program Files (x86)\NSIS\makensis.exe' scripts\installer.nsi
+        # This single action installs and runs NSIS for you
+        uses: joncloud/makensis-action@v3
+        with:
+          # Make sure this path points to your NSIS script
+          script-file: scripts/installer.nsi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: windows-moneymirror
+          # This correctly uploads both the final installer and the raw build output
           path: |
-            dist\moneymirror\**
-            output\MoneyMirror-Setup.exe
+            dist/moneymirror/
+            output/MoneyMirror-Setup.exe
