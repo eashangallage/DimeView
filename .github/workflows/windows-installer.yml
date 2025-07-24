@@ -39,7 +39,11 @@ jobs:
 
       - name: Create NSIS Installer
         run: |
-          "C:\Program Files (x86)\NSIS\makensis.exe" scripts\installer.nsi
+          # Make sure output directory exists
+          if (!(Test-Path output)) { New-Item -ItemType Directory -Path output }
+
+          # Call makensis.exe via the "&" operator
+          & 'C:\Program Files (x86)\NSIS\makensis.exe' scripts\installer.nsi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
