@@ -4,9 +4,8 @@ name: Build Windows Installer
 on:
   push:
     branches:
-      - main
+      - debian
   workflow_dispatch:
-    
 
 jobs:
   build-installer:
