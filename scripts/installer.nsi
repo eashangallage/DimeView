@@ -1,7 +1,7 @@
 !define APP_NAME "MoneyMirror"
 !define APP_EXE  "moneymirror.exe"
-!define SRC_DIR  "${PROJECT}\dist\moneymirror"
-!define OUT_FILE "${PROJECT}\output\MoneyMirror-Setup.exe"
+!define SRC_DIR  "dist\\moneymirror"
+!define OUT_FILE "output\\MoneyMirror-Setup.exe"
 
 Name "${APP_NAME} Setup"
 OutFile "${OUT_FILE}"
@@ -13,6 +13,6 @@ Page instfiles
 
 Section "Install"
   SetOutPath "$INSTDIR"
-  File /r "${SRC_DIR}\*.*"
+  File /r "dist\\moneymirror\\*.*"
   CreateShortcut "$DESKTOP\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}"
 SectionEnd
