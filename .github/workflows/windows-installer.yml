@@ -1,6 +1,6 @@
 name: Build Windows Installer
 
-# Trigger on pushes to main (or manually via workflow_dispatch)
+# Trigger on pushes to debian (or manually via workflow_dispatch)
 on:
   push:
     branches:
@@ -27,9 +27,9 @@ jobs:
           pip install pyinstaller
 
       - name: Build application with PyInstaller
+        shell: bash
         run: |
-          pyinstaller \
-            --name moneymirror \
+          pyinstaller --name moneymirror \
             --onedir \
             --windowed \
             --add-data "src/moneymirror/resources;resources" \
@@ -39,8 +39,7 @@ jobs:
         run: choco install nsis -y
 
       - name: Compile NSIS installer
-        run: |
-          makensis.exe -V2 scripts/installer.nsi
+        run: makensis.exe -V2 scripts/installer.nsi
 
       - name: Upload Installer Artifact
         uses: actions/upload-artifact@v4
