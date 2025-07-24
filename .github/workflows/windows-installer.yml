@@ -43,7 +43,7 @@ jobs:
           makensis.exe -V2 scripts/installer.nsi
 
       - name: Upload Installer Artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: MoneyMirror-Windows-Installer
           path: |
