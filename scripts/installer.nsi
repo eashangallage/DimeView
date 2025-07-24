@@ -4,8 +4,9 @@
 !define VERSION "1.0.0"
 
 # --- Source & Output Files ---
-!define SRC_DIR  "dist\moneymirror"
-!define OUT_FILE "output\MoneyMirror-Setup.exe"
+# Use the GITHUB_WORKSPACE variable to create an absolute path to the PyInstaller output
+!define SRC_DIR  "${GITHUB_WORKSPACE}\dist"
+!define OUT_FILE "${GITHUB_WORKSPACE}\output\MoneyMirror-Setup.exe"
 
 # --- Installer Settings ---
 RequestExecutionLevel admin
