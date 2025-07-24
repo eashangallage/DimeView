@@ -1,0 +1,50 @@
+name: Build & Package Windows
+
+on:
+  push:
+    branches: [ debian ]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Install package & PyInstaller
+        run: |
+          python -m venv venv
+          .\venv\Scripts\Activate.ps1
+          pip install -e .
+          pip install pyinstaller
+
+      - name: Run PyInstaller
+        run: |
+          .\venv\Scripts\Activate.ps1
+          pyinstaller --name moneymirror `
+                      --onedir `
+                      --windowed `
+                      --add-data "src/moneymirror/resources;resources" `
+                      src\moneymirror\main.py
+
+      - name: Install NSIS
+        run: choco install nsis --no-progress
+
+      - name: Create NSIS Installer
+        run: |
+          "C:\Program Files (x86)\NSIS\makensis.exe" scripts\installer.nsi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: windows-moneymirror
+          path: |
+            dist\moneymirror\**
+            output\MoneyMirror-Setup.exe
