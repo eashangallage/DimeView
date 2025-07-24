@@ -46,4 +46,4 @@ jobs:
         with:
           name: MoneyMirror-Windows-Installer
           path: |
-            "${{ github.workspace }}\MoneyMirror-Setup-*.exe"
+            dist\MoneyMirror-Setup-*.exe

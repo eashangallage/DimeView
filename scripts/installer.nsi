@@ -8,7 +8,9 @@
 
 ;--------------------------------
 Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"
-OutFile "dist\\${INSTALLER_NAME}"
+; write the installer out into the repo-root/dist folder
+OutFile "..\\dist\\${INSTALLER_NAME}"
+
 InstallDir "$PROGRAMFILES\\${PRODUCT_NAME}"
 InstallDirRegKey HKLM "Software\\${PRODUCT_NAME}" "Install_Dir"
 
@@ -24,27 +26,21 @@ InstallDirRegKey HKLM "Software\\${PRODUCT_NAME}" "Install_Dir"
 
 ;--------------------------------
 Section "Install"
-  ; where to put files
   SetOutPath "$INSTDIR"
 
-  ; copy entire dist\moneymirror directory
-  File /r "dist\\moneymirror\\*.*"
+  ; copy everything from the PyInstaller output
+  File /r "..\\dist\\moneymirror\\*.*"
 
   ; record install location in registry
   WriteRegStr HKLM "Software\\${PRODUCT_NAME}" "Install_Dir" "$INSTDIR"
 
-  ; write uninstaller
+  ; write uninstaller into the install folder
   WriteUninstaller "$INSTDIR\\Uninstall.exe"
 SectionEnd
 
 ;--------------------------------
 Section "Uninstall"
-  ; remove registry key
   DeleteRegKey HKLM "Software\\${PRODUCT_NAME}"
-
-  ; remove installed files and directories
   RMDir /r "$INSTDIR"
-
-  ; remove uninstaller
   Delete "$INSTDIR\\Uninstall.exe"
 SectionEnd
