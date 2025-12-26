@@ -1,9 +1,10 @@
 name: Build Windows Executable
 
 on:
-  push:
-    tags:
-      - 'v*'  # Trigger on version tags like v1.0.0
+  # Disabled - using windows-installer.yml instead
+  # push:
+  #   tags:
+  #     - 'v*'  # Trigger on version tags like v1.0.0
   workflow_dispatch:  # Allow manual trigger from GitHub UI
 
 jobs:
