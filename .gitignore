@@ -1,4 +1,3 @@
-cat > .gitignore << 'EOF'
 # Virtual environment
 venv/
 
@@ -14,5 +13,23 @@ __pycache__/
 
 # Packaging metadata
 *.egg-info/
-EOF
 
+# IDE and OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Cache and temporary files
+*.cache
+.pytest_cache/
+
+# Ignore all Markdown files
+*.md
+
+# But do NOT ignore README.md
+!README.md
+
+# Ignore all text files
+*.txt

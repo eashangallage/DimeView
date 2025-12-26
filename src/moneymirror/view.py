@@ -12,8 +12,15 @@ from PyQt6.QtWidgets import (
     QDialog, QHBoxLayout, QRadioButton, QButtonGroup, QGroupBox,
     QSizePolicy,QGridLayout, QMessageBox,QApplication
 )
-from PyQt6.QtCore import pyqtSignal, QDate, Qt
+from PyQt6.QtCore import pyqtSignal, QDate, Qt, QObject, QEvent
 from PyQt6.QtGui import QFont
+
+def configure_combobox_height(combo_box, max_items=10):
+    """Configure a QComboBox to show max items before scrolling."""
+    # Set the maximum height to show approximately 10 items
+    combo_box.setMaxVisibleItems(max_items)
+    # Ensure the view height is constrained
+    combo_box.view().setMinimumHeight(max_items * 20)  # ~20 pixels per item
 
 class LoadingDialog(QDialog):
     def __init__(self, message="Loading... Please wait."):
@@ -154,6 +161,7 @@ class DataEntryTab(QWidget):
         self.load_no_combo.setEditable(True)
         self.load_no_combo.lineEdit().setPlaceholderText("e.g., 100")
         self.load_no_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        configure_combobox_height(self.load_no_combo, 10)
 
         self.custom_load_edit = QLineEdit()
         self.custom_load_edit.setPlaceholderText("Other")
@@ -161,7 +169,7 @@ class DataEntryTab(QWidget):
         self.custom_load_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         # GroupBox to visually connect options
-        load_box = QGroupBox("Load No.")
+        load_box = QGroupBox("📦 Load No.")
         grid = QGridLayout(load_box)
 
         # Add radio buttons and inputs in grid columns 0 and 1 respectively
@@ -173,6 +181,23 @@ class DataEntryTab(QWidget):
         # Optional: set column minimum width and stretch to improve appearance
         grid.setColumnMinimumWidth(0, 160)  # adjust to fit radio buttons nicely
         grid.setColumnStretch(1, 1)         # input widgets expand to fill space
+        
+        # Apply stylesheet for better visibility
+        load_box.setStyleSheet("""
+            QGroupBox {
+                border: 2px solid #2196F3;
+                border-radius: 5px;
+                margin-top: 10px;
+                padding-top: 10px;
+                font-weight: bold;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px 0 5px;
+            }
+        """)
+        grid.setColumnStretch(1, 1)         # input widgets expand to fill space
 
         layout.addRow(load_box)
 
@@ -183,33 +208,40 @@ class DataEntryTab(QWidget):
         # Driver ID
         self.driver_id_combo = QComboBox()
         self.driver_id_combo.setEditable(True)
+        configure_combobox_height(self.driver_id_combo, 10)
         layout.addRow("Driver ID:", self.driver_id_combo)
 
         # Truck ID
         self.truck_id_combo = QComboBox()
         self.truck_id_combo.setEditable(True)
+        configure_combobox_height(self.truck_id_combo, 10)
         layout.addRow("Truck ID:", self.truck_id_combo)
     
         # From State
         self.from_state_combo = QComboBox()
         self.from_state_combo.setEditable(True)
+        configure_combobox_height(self.from_state_combo, 10)
         layout.addRow("From State:", self.from_state_combo)
 
         # To State
         self.to_state_combo = QComboBox()
         self.to_state_combo.setEditable(True)
+        configure_combobox_height(self.to_state_combo, 10)
         layout.addRow("To State:", self.to_state_combo)
 
         # Transaction
         self.transaction_combo = QComboBox()
+        configure_combobox_height(self.transaction_combo, 10)
         layout.addRow("Transaction:", self.transaction_combo)
 
         # Delivery Status
         self.delivery_combo = QComboBox()
+        configure_combobox_height(self.delivery_combo, 10)
         layout.addRow("Delivery Status:", self.delivery_combo)
 
         # Payment Status
         self.payment_combo = QComboBox()
+        configure_combobox_height(self.payment_combo, 10)
         layout.addRow("Payment Status:", self.payment_combo)
 
         # Credit
@@ -229,8 +261,8 @@ class DataEntryTab(QWidget):
 
         # Submit and Reset buttons
         btn_layout = QHBoxLayout()
-        self.submit_button = QPushButton("Submit Entry")
-        self.reset_button = QPushButton("Reset Form")
+        self.submit_button = QPushButton("✅ Submit Entry")
+        self.reset_button = QPushButton("🗘 Reset Form")
         btn_layout.addWidget(self.submit_button)
         btn_layout.addWidget(self.reset_button)
         layout.addRow(btn_layout)
@@ -269,63 +301,207 @@ class DataEntryTab(QWidget):
         else:
             self.custom_load_edit.clear()
 
+    def populate_from_entry(self, entry_row):
+        """
+        Populate form fields from a data row.
+        Row format: [date, load_no, driver_id, truck_id, from_state, to_state,
+                     transaction, delivery_status, payment_status, credit, debit, details]
+        """
+        if not entry_row or len(entry_row) < 9:
+            return
+
+        # [0]=Date, [1]=Load, [2]=Driver, [3]=Truck, [4]=From, [5]=To,
+        # [6]=Transaction, [7]=Delivery, [8]=Payment
+        self.driver_id_combo.setCurrentText(entry_row[2])
+        self.truck_id_combo.setCurrentText(entry_row[3])
+        self.from_state_combo.setCurrentText(entry_row[4])
+        self.to_state_combo.setCurrentText(entry_row[5])
+        self.delivery_combo.setCurrentText(entry_row[7])
+        self.payment_combo.setCurrentText(entry_row[8])
+
+    def setup_state_auto_format(self, model):
+        """
+        Connect state combo boxes to auto-format input when focus is lost.
+        Call this from the controller after the view is initialized.
+        """
+        # Create event filters for the state combo boxes
+        state_formatter_from = StateAutoFormatter(model, self.from_state_combo)
+        state_formatter_to = StateAutoFormatter(model, self.to_state_combo)
+        
+        self.from_state_combo.lineEdit().installEventFilter(state_formatter_from)
+        self.to_state_combo.lineEdit().installEventFilter(state_formatter_to)
+
+
+class StateAutoFormatter(QObject):
+    """Event filter to auto-format state input when focus is lost."""
+    
+    def __init__(self, model, combo_box):
+        super().__init__()
+        self.model = model
+        self.combo_box = combo_box
+    
+    def eventFilter(self, obj, event):
+        """Handle focus out event to auto-format state input."""
+        if event.type() == QEvent.Type.FocusOut:
+            current_text = obj.text().strip()
+            if current_text:
+                # Format the input using the model
+                formatted = self.model.format_state_input(current_text)
+                
+                # Simply set the text on the line edit
+                # This works because the combo box is editable
+                obj.setText(formatted)
+        
+        return super().eventFilter(obj, event)
+
 
 
 class ReportsTab(QWidget):
     def __init__(self):
         super().__init__()
         layout = QVBoxLayout()
-        filter_layout = QHBoxLayout()
-
-        # Date filters
+        
+        # === FILTERS SECTION ===
+        filters_section = QVBoxLayout()
+        
+        # Row 1: Date filters (vertical)
+        date_layout = QVBoxLayout()
+        from_date_layout = QHBoxLayout()
+        from_date_layout.addWidget(QLabel("From Date:"))
         self.from_date = QDateEdit()
         self.from_date.setCalendarPopup(True)
         self.from_date.setDate(QDate.currentDate().addMonths(-1))
-        filter_layout.addWidget(QLabel("From:"))
-        filter_layout.addWidget(self.from_date)
-
+        from_date_layout.addWidget(self.from_date)
+        date_layout.addLayout(from_date_layout)
+        
+        to_date_layout = QHBoxLayout()
+        to_date_layout.addWidget(QLabel("To Date:"))
         self.to_date = QDateEdit()
         self.to_date.setCalendarPopup(True)
         self.to_date.setDate(QDate.currentDate())
-        filter_layout.addWidget(QLabel("To:"))
-        filter_layout.addWidget(self.to_date)
-
-        # Load No. filter
-        self.load_no_filter_combo = QComboBox()
-        filter_layout.addWidget(QLabel("Load No.:"))
-        filter_layout.addWidget(self.load_no_filter_combo)
-
-        # Transaction filter
+        to_date_layout.addWidget(self.to_date)
+        date_layout.addLayout(to_date_layout)
+        filters_section.addLayout(date_layout)
+        
+        # Row 2: Transaction, Load No, Driver
+        row2_layout = QHBoxLayout()
+        
+        # Transaction filter (moved to second position)
+        trans_layout = QVBoxLayout()
+        trans_layout.addWidget(QLabel("Transaction:"))
         self.transaction_filter_combo = QComboBox()
-        filter_layout.addWidget(QLabel("Transaction:"))
-        filter_layout.addWidget(self.transaction_filter_combo)
+        configure_combobox_height(self.transaction_filter_combo, 10)
+        trans_layout.addWidget(self.transaction_filter_combo)
+        row2_layout.addLayout(trans_layout)
+        
+        # Load No. filter
+        load_layout = QVBoxLayout()
+        load_layout.addWidget(QLabel("Load No.:"))
+        self.load_no_filter_combo = QComboBox()
+        self.load_no_filter_combo.setEditable(True)
+        configure_combobox_height(self.load_no_filter_combo, 10)
+        load_layout.addWidget(self.load_no_filter_combo)
+        row2_layout.addLayout(load_layout)
+        
+        # Driver filter
+        driver_layout = QVBoxLayout()
+        driver_layout.addWidget(QLabel("Driver:"))
+        self.driver_filter_combo = QComboBox()
+        self.driver_filter_combo.setEditable(True)
+        configure_combobox_height(self.driver_filter_combo, 10)
+        driver_layout.addWidget(self.driver_filter_combo)
+        row2_layout.addLayout(driver_layout)
+        
+        filters_section.addLayout(row2_layout)
+        
+        # Row 3: State filters (vertical)
+        state_layout = QVBoxLayout()
+        from_state_row = QHBoxLayout()
+        from_state_row.addWidget(QLabel("From State:"))
+        self.from_state_filter_combo = QComboBox()
+        self.from_state_filter_combo.setEditable(True)
+        configure_combobox_height(self.from_state_filter_combo, 10)
+        from_state_row.addWidget(self.from_state_filter_combo)
+        state_layout.addLayout(from_state_row)
+        
+        to_state_row = QHBoxLayout()
+        to_state_row.addWidget(QLabel("To State:"))
+        self.to_state_filter_combo = QComboBox()
+        self.to_state_filter_combo.setEditable(True)
+        configure_combobox_height(self.to_state_filter_combo, 10)
+        to_state_row.addWidget(self.to_state_filter_combo)
+        state_layout.addLayout(to_state_row)
+        filters_section.addLayout(state_layout)
+        
+        # Create a QGroupBox with the filters layout for visual outline
+        filters_group = QGroupBox("📋 Report Filters")
+        filters_group.setLayout(filters_section)
+        # Apply stylesheet for better visibility
+        filters_group.setStyleSheet("""
+            QGroupBox {
+                border: 2px solid #4CAF50;
+                border-radius: 5px;
+                margin-top: 10px;
+                padding-top: 10px;
+                font-weight: bold;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px 0 5px;
+            }
+        """)
+        layout.addWidget(filters_group)
+        
+        # === REPORT GENERATION BUTTON ===
+        self.generate_button = QPushButton("📝 Generate Report")
+        layout.addWidget(self.generate_button)
 
-        layout.addLayout(filter_layout)
-
-        # Buttons
-        self.detailed_button = QPushButton("Generate Detailed Report")
-        self.summary_button = QPushButton("Generate Summary Report")
-        layout.addWidget(self.detailed_button)
-        layout.addWidget(self.summary_button)
-
-        # Detailed table and CSV download
+        # === DETAILED TABLE ===
         self.detailed_table = QTableWidget()
         layout.addWidget(self.detailed_table)
-        self.csv_download_button = QPushButton("Download CSV")
-        layout.addWidget(self.csv_download_button)
 
-        # Summary text and PDF download
+        # === SUMMARY TEXT ===
         self.summary_text = QTextEdit()
         layout.addWidget(self.summary_text)
-        self.pdf_download_button = QPushButton("Download PDF")
-        layout.addWidget(self.pdf_download_button)
+        
+        # === DOWNLOAD BUTTONS (Vertical, at bottom above Reset) ===
+        download_layout = QVBoxLayout()
+        self.csv_download_button = QPushButton("⬇️ Download Detailed Report as CSV")
+        self.pdf_download_button = QPushButton("⬇️ Download Summary Report as PDF")
+        download_layout.addWidget(self.csv_download_button)
+        download_layout.addWidget(self.pdf_download_button)
+        layout.addLayout(download_layout)
+        
+        # === RESET BUTTON (at bottom) ===
+        self.reset_button = QPushButton("🗘 Reset Filters")
+        layout.addWidget(self.reset_button)
 
         self.setLayout(layout)
 
     def populate_detailed_table(self, rows, column_headers):
+        # Map coding names to human-readable names
+        header_mapping = {
+            'date': 'Date',
+            'load_no': 'Load No.',
+            'driver_id': 'Driver ID',
+            'truck_id': 'Truck ID',
+            'from_state': 'From State',
+            'to_state': 'To State',
+            'transaction': 'Transaction',
+            'delivery_status': 'Delivery Status',
+            'payment_status': 'Payment Status',
+            'credit': 'Credit',
+            'debit': 'Debit',
+            'details': 'Details'
+        }
+        
+        # Convert headers to readable names
+        readable_headers = [header_mapping.get(h, h) for h in column_headers]
+        
         self.detailed_table.clear()
-        self.detailed_table.setColumnCount(len(column_headers))
-        self.detailed_table.setHorizontalHeaderLabels(column_headers)
+        self.detailed_table.setColumnCount(len(readable_headers))
+        self.detailed_table.setHorizontalHeaderLabels(readable_headers)
         self.detailed_table.setRowCount(len(rows))
         for i, row in enumerate(rows):
             for j, val in enumerate(row):
@@ -344,6 +520,22 @@ class ReportsTab(QWidget):
                 export_func(rows, path)
         self.csv_download_button.clicked.connect(save_csv)
 
+    def enable_pdf_download(self, export_func, summary, rows=None):
+        self.pdf_download_button.setEnabled(True)
+        try:
+            self.pdf_download_button.clicked.disconnect()
+        except Exception:
+            pass
+        def save_pdf():
+            path, _ = QFileDialog.getSaveFileName(self, "Save PDF", "", "PDF Files (*.pdf)")
+            if path:
+                # Pass both summary and rows if available
+                if rows is not None:
+                    export_func(summary, path, rows)
+                else:
+                    export_func(summary, path)
+        self.pdf_download_button.clicked.connect(save_pdf)
+
     def populate_summary(self, summary):
         text = (
             f"Time Period: {summary['time_period']}\n"
@@ -353,17 +545,17 @@ class ReportsTab(QWidget):
         )
         self.summary_text.setPlainText(text)
 
-    def enable_pdf_download(self, export_func, summary):
-        self.pdf_download_button.setEnabled(True)
-        try:
-            self.pdf_download_button.clicked.disconnect()
-        except Exception:
-            pass
-        def save_pdf():
-            path, _ = QFileDialog.getSaveFileName(self, "Save PDF", "", "PDF Files (*.pdf)")
-            if path:
-                export_func(summary, path)
-        self.pdf_download_button.clicked.connect(save_pdf)
+    def reset_filters(self):
+        """Reset all filter selections to defaults."""
+        self.from_date.setDate(QDate.currentDate().addMonths(-1))
+        self.to_date.setDate(QDate.currentDate())
+        self.load_no_filter_combo.setCurrentIndex(0)  # Select 'All'
+        self.driver_filter_combo.setCurrentIndex(0)   # Select 'All'
+        self.from_state_filter_combo.setCurrentIndex(0)  # Select blank
+        self.to_state_filter_combo.setCurrentIndex(0)    # Select blank
+        self.transaction_filter_combo.setCurrentIndex(0) # Select 'All'
+        self.detailed_table.clear()
+        self.summary_text.clear()
 
 class MainWindow(QMainWindow):
     """Main application window containing tabs."""

@@ -35,18 +35,22 @@ class SpreadsheetLoader(QObject):
 class DetailedReportGenerator(QObject):
     finished = pyqtSignal(object, object)  # data or None, error or None
 
-    def __init__(self, model, from_date, to_date, load_no, transaction):
+    def __init__(self, model, from_date, to_date, load_no, transaction, driver=None, from_state=None, to_state=None):
         super().__init__()
         self.model = model
         self.from_date = from_date
         self.to_date = to_date
         self.load_no = load_no
         self.transaction = transaction
+        self.driver = driver
+        self.from_state = from_state
+        self.to_state = to_state
 
     def run(self):
         try:
             rows = self.model.generate_detailed_report(
-                self.from_date, self.to_date, self.load_no, self.transaction
+                self.from_date, self.to_date, self.load_no, self.transaction, self.driver,
+                self.from_state, self.to_state
             )
             self.finished.emit(rows, None)
         except Exception as e:
@@ -56,18 +60,22 @@ class DetailedReportGenerator(QObject):
 class SummaryReportGenerator(QObject):
     finished = pyqtSignal(object, object)  # summary or None, error or None
 
-    def __init__(self, model, from_date, to_date, load_no, transaction):
+    def __init__(self, model, from_date, to_date, load_no, transaction, driver=None, from_state=None, to_state=None):
         super().__init__()
         self.model = model
         self.from_date = from_date
         self.to_date = to_date
         self.load_no = load_no
         self.transaction = transaction
+        self.driver = driver
+        self.from_state = from_state
+        self.to_state = to_state
 
     def run(self):
         try:
             summary = self.model.generate_summary_report(
-                self.from_date, self.to_date, self.load_no, self.transaction
+                self.from_date, self.to_date, self.load_no, self.transaction, self.driver,
+                self.from_state, self.to_state
             )
             self.finished.emit(summary, None)
         except Exception as e:
@@ -281,33 +289,24 @@ class MoneyMirrorController:
             tab.payment_combo.setCurrentText('Complete')
 
     def on_load_no_changed(self, load_no):
+        """Fetch latest entry for a load_no and populate form fields."""
         if not load_no or load_no == 'Other':
             return
 
-        # Pull all rows for this load (no date filters)
-        rows = self.model.generate_detailed_report(None, None, load_no=load_no)
-        latest = None
-        latest_date = None
-        for r in rows:
-            try:
-                d = datetime.strptime(r[0], '%Y/%m/%d').date()
-            except:
-                continue
-            if latest_date is None or d > latest_date:
-                latest_date, latest = d, r
+        try:
+            # Pull all rows for this load (no date filters)
+            rows = self.model.generate_detailed_report(None, None, load_no=load_no)
+            latest_entry = self.model.get_latest_entry(rows)
 
-        if not latest:
-            return
+            if not latest_entry:
+                return
 
-        tab = self.main_window.data_entry_tab
-        # [0]=Date, [1]=Load, [2]=Driver, [3]=Truck, [4]=From, [5]=To,
-        # [6]=Transaction, [7]=Delivery, [8]=Payment, …
-        tab.driver_id_combo.setCurrentText(latest[2])
-        tab.truck_id_combo.setCurrentText(latest[3])
-        tab.from_state_combo.setCurrentText(latest[4])
-        tab.to_state_combo.setCurrentText(latest[5])
-        tab.delivery_combo.setCurrentText(latest[7])
-        tab.payment_combo.setCurrentText(latest[8])
+            # Update the view with the latest entry data
+            tab = self.main_window.data_entry_tab
+            tab.populate_from_entry(latest_entry)
+        except (GoogleQuotaExceededError, HttpError) as e:
+            # Silently fail on auto-populate (non-blocking operation)
+            pass
 
     def handle_data_entry_submit(self):
         data_tab = self.main_window.data_entry_tab
@@ -340,47 +339,62 @@ class MoneyMirrorController:
             QMessageBox.critical(None, "Error", f"Invalid debit amount: '{debit_text}'")
             return
 
-        def validate_state(state_text, field_name, valid_states):
+        def validate_and_format_state(state_text, field_name, valid_states, model):
+            """Validate state and convert abbreviations to full format. Empty values are allowed."""
             state_text = state_text.strip()
-            if state_text and state_text not in valid_states:
-                QMessageBox.critical(None, "Error", f"Invalid {field_name} entry: '{state_text}'")
-                return False
-            return True
+            if not state_text:
+                return ""  # Allow empty states
+            
+            # If already in full format (contains ':'), use as-is
+            if ':' in state_text:
+                if state_text in valid_states:
+                    return state_text
+                else:
+                    QMessageBox.critical(None, "Error", f"Invalid {field_name} entry: '{state_text}'")
+                    return None
+            
+            # If abbreviation (2 letters), convert to full format
+            if len(state_text) == 2:
+                formatted = model.format_state_input(state_text)
+                if formatted in valid_states:
+                    return formatted
+                else:
+                    QMessageBox.critical(None, "Error", f"'{state_text}' is not a valid state abbreviation for {field_name}")
+                    return None
+            
+            # Try partial name match
+            formatted = model.format_state_input(state_text)
+            if formatted in valid_states:
+                return formatted
+            
+            QMessageBox.critical(None, "Error", f"Invalid {field_name} entry: '{state_text}'")
+            return None
 
         from_text = data_tab.from_state_combo.currentText()
         to_text = data_tab.to_state_combo.currentText()
-        if not validate_state(from_text, "From State", self.us_states):
+        
+        from_text = validate_and_format_state(from_text, "From State", self.us_states, self.model)
+        if from_text is None:
             return
-        if not validate_state(to_text, "To State", self.us_states):
+        
+        to_text = validate_and_format_state(to_text, "To State", self.us_states, self.model)
+        if to_text is None:
             return
 
-        from_state = from_text.split(':')[0].strip()
-        to_state = to_text.split(':')[0].strip()
+        from_state = from_text.split(':')[0].strip() if from_text else ""
+        to_state = to_text.split(':')[0].strip() if to_text else ""
 
         # Pre-submission status & field change check (sync with model)
         try:
             if load_no and load_no != "Other":
                 prev_rows = self.model.generate_detailed_report(None, date_val, load_no, None)
-                if prev_rows:
-                    latest = max(prev_rows, key=lambda r: datetime.strptime(r[0], "%Y/%m/%d"))
-                    # old values
-                    old_driver, old_truck = latest[2], latest[3]
-                    old_from, old_to = latest[4], latest[5]
-                    old_delivery, old_payment = latest[7], latest[8]
-                    changes = []
-                    # detect changes with both old and new in message
-                    if driver_id and driver_id != old_driver:
-                        changes.append(f"Driver ID: {old_driver} → {driver_id}")
-                    if truck_id and truck_id != old_truck:
-                        changes.append(f"Truck ID: {old_truck} → {truck_id}")
-                    if from_state and from_state != old_from:
-                        changes.append(f"From State: {old_from} → {from_state}")
-                    if to_state and to_state != old_to:
-                        changes.append(f"To State: {old_to} → {to_state}")
-                    if delivery_status and delivery_status != old_delivery:
-                        changes.append(f"Delivery Status: {old_delivery} → {delivery_status}")
-                    if payment_status and payment_status != old_payment:
-                        changes.append(f"Payment Status: {old_payment} → {payment_status}")
+                latest_prev = self.model.get_latest_entry(prev_rows)
+                if latest_prev:
+                    # Get changes from model
+                    changes = self.model.detect_field_changes(
+                        latest_prev, driver_id, truck_id, from_state, to_state,
+                        delivery_status, payment_status
+                    )
                     if changes:
                         msg = (
                             f"This submission will update the following fields for all previous entries of Load No. {load_no}:\n  " +
@@ -479,9 +493,21 @@ class MoneyMirrorController:
         reports_tab.transaction_filter_combo.clear()
         reports_tab.transaction_filter_combo.addItems(trans_opts)
 
-        # Connect report buttons
-        reports_tab.detailed_button.clicked.connect(self.handle_generate_detailed_report)
-        reports_tab.summary_button.clicked.connect(self.handle_generate_summary_report)
+        # Populate driver filter immediately (no async needed)
+        driver_opts = ["All"] + self.model.get_all_driver_ids()
+        reports_tab.driver_filter_combo.clear()
+        reports_tab.driver_filter_combo.addItems(driver_opts)
+
+        # Populate state filters with blank as default + all states
+        state_opts = [""] + self.model.get_us_states()
+        reports_tab.from_state_filter_combo.clear()
+        reports_tab.from_state_filter_combo.addItems(state_opts)
+        reports_tab.to_state_filter_combo.clear()
+        reports_tab.to_state_filter_combo.addItems(state_opts)
+
+        # Connect report buttons and reset button
+        reports_tab.generate_button.clicked.connect(self.handle_generate_report)
+        reports_tab.reset_button.clicked.connect(reports_tab.reset_filters)
 
 
     def _on_load_nos_fetched(self, result):
@@ -515,23 +541,126 @@ class MoneyMirrorController:
         self.loading_dialog.close()
         self.main_window.show()
 
+    def handle_generate_report(self):
+        """Generate both detailed and summary reports."""
+        reports_tab = self.main_window.reports_tab
+        from_date = reports_tab.from_date.date().toPyDate()
+        to_date = reports_tab.to_date.date().toPyDate()
+        load_no = reports_tab.load_no_filter_combo.currentText().strip()
+        driver = reports_tab.driver_filter_combo.currentText()
+        from_state = reports_tab.from_state_filter_combo.currentText().strip()
+        to_state = reports_tab.to_state_filter_combo.currentText().strip()
+        transaction = reports_tab.transaction_filter_combo.currentText()
+        
+        # Validate Load No if entered
+        if load_no and load_no != "All":
+            valid_load_nos = self.model.get_all_load_nos()
+            if load_no not in valid_load_nos:
+                QMessageBox.critical(None, "Error", f"Invalid Load No: '{load_no}'. Please select from the dropdown or enter a valid load number.")
+                return
+        else:
+            load_no = None
+        
+        if driver == "All":
+            driver = None
+        if transaction == "All":
+            transaction = None
+        
+        # Extract abbreviations from state filters (e.g., "AL: Alabama" -> "AL")
+        from_state = from_state.split(':')[0].strip() if from_state else None
+        to_state = to_state.split(':')[0].strip() if to_state else None
+
+        self.loading_dialog = LoadingDialog("Generating report, please wait...")
+        self.loading_dialog.show()
+
+        # Store filter parameters for later use
+        self.current_filters = {
+            'from_date': from_date,
+            'to_date': to_date,
+            'load_no': load_no,
+            'transaction': transaction,
+            'driver': driver,
+            'from_state': from_state,
+            'to_state': to_state
+        }
+
+        self.detailed_thread = QThread()
+        self.detailed_worker = DetailedReportGenerator(
+            self.model, from_date, to_date, load_no, transaction, driver, from_state, to_state
+        )
+        self.detailed_worker.moveToThread(self.detailed_thread)
+        self.detailed_thread.started.connect(self.detailed_worker.run)
+        self.detailed_worker.finished.connect(self._on_report_generated)
+        self.detailed_worker.finished.connect(self.detailed_thread.quit)
+        self.detailed_worker.finished.connect(self.detailed_worker.deleteLater)
+        self.detailed_thread.finished.connect(self.detailed_thread.deleteLater)
+        self.detailed_thread.start()
+
+    def _on_report_generated(self, rows, error):
+        self.loading_dialog.close()
+        if error:
+            if isinstance(error, GoogleQuotaExceededError):
+                QMessageBox.warning(None, "Quota Exceeded",
+                                    "Google Sheets API quota exceeded while generating report. Please wait and try again.")
+            elif isinstance(error, HttpError):
+                QMessageBox.critical(None, "Google API Error",
+                                     f"Google API error while generating report:\n{error}")
+            else:
+                QMessageBox.critical(None, "Error", f"Error generating report: {error}")
+            return
+        
+        # Store detailed rows for later PDF export
+        self.current_detailed_rows = rows
+        
+        # Populate detailed table
+        column_headers = self.model.get_header_indices()
+        reports_tab = self.main_window.reports_tab
+        reports_tab.populate_detailed_table(rows, column_headers)
+        reports_tab.enable_csv_download(self.model.export_detailed_csv, rows)
+        
+        # Generate and display summary
+        filters = self.current_filters
+        summary = self.model.generate_summary_report(
+            filters['from_date'], filters['to_date'], filters['load_no'], filters['transaction'],
+            filters['driver'], filters['from_state'], filters['to_state']
+        )
+        reports_tab.populate_summary(summary)
+        reports_tab.enable_pdf_download(self.model.export_summary_pdf, summary, rows)
+
     def handle_generate_detailed_report(self):
         reports_tab = self.main_window.reports_tab
         from_date = reports_tab.from_date.date().toPyDate()
         to_date = reports_tab.to_date.date().toPyDate()
-        load_no = reports_tab.load_no_filter_combo.currentText()
+        load_no = reports_tab.load_no_filter_combo.currentText().strip()
+        driver = reports_tab.driver_filter_combo.currentText()
+        from_state = reports_tab.from_state_filter_combo.currentText().strip()
+        to_state = reports_tab.to_state_filter_combo.currentText().strip()
         transaction = reports_tab.transaction_filter_combo.currentText()
-        if load_no == "All":
+        
+        # Validate Load No if entered
+        if load_no and load_no != "All":
+            valid_load_nos = self.model.get_all_load_nos()
+            if load_no not in valid_load_nos:
+                QMessageBox.critical(None, "Error", f"Invalid Load No: '{load_no}'. Please select from the dropdown or enter a valid load number.")
+                return
+        else:
             load_no = None
+        
+        if driver == "All":
+            driver = None
         if transaction == "All":
             transaction = None
+        
+        # Extract abbreviations from state filters (e.g., "AL: Alabama" -> "AL")
+        from_state = from_state.split(':')[0].strip() if from_state else None
+        to_state = to_state.split(':')[0].strip() if to_state else None
 
         self.loading_dialog = LoadingDialog("Generating detailed report, please wait...")
         self.loading_dialog.show()
 
         self.detailed_thread = QThread()
         self.detailed_worker = DetailedReportGenerator(
-            self.model, from_date, to_date, load_no, transaction
+            self.model, from_date, to_date, load_no, transaction, driver, from_state, to_state
         )
         self.detailed_worker.moveToThread(self.detailed_thread)
         self.detailed_thread.started.connect(self.detailed_worker.run)
@@ -563,19 +692,36 @@ class MoneyMirrorController:
         reports_tab = self.main_window.reports_tab
         from_date = reports_tab.from_date.date().toPyDate()
         to_date = reports_tab.to_date.date().toPyDate()
-        load_no = reports_tab.load_no_filter_combo.currentText()
+        load_no = reports_tab.load_no_filter_combo.currentText().strip()
+        driver = reports_tab.driver_filter_combo.currentText()
+        from_state = reports_tab.from_state_filter_combo.currentText().strip()
+        to_state = reports_tab.to_state_filter_combo.currentText().strip()
         transaction = reports_tab.transaction_filter_combo.currentText()
-        if load_no == "All":
+        
+        # Validate Load No if entered
+        if load_no and load_no != "All":
+            valid_load_nos = self.model.get_all_load_nos()
+            if load_no not in valid_load_nos:
+                QMessageBox.critical(None, "Error", f"Invalid Load No: '{load_no}'. Please select from the dropdown or enter a valid load number.")
+                return
+        else:
             load_no = None
+        
+        if driver == "All":
+            driver = None
         if transaction == "All":
             transaction = None
+        
+        # Extract abbreviations from state filters (e.g., "AL: Alabama" -> "AL")
+        from_state = from_state.split(':')[0].strip() if from_state else None
+        to_state = to_state.split(':')[0].strip() if to_state else None
 
         self.loading_dialog = LoadingDialog("Generating summary report, please wait...")
         self.loading_dialog.show()
 
         self.summary_thread = QThread()
         self.summary_worker = SummaryReportGenerator(
-            self.model, from_date, to_date, load_no, transaction
+            self.model, from_date, to_date, load_no, transaction, driver, from_state, to_state
         )
         self.summary_worker.moveToThread(self.summary_thread)
         self.summary_thread.started.connect(self.summary_worker.run)

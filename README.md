@@ -1,72 +1,62 @@
 # MoneyMirror
 
-MoneyMirror is a desktop application for managing and visualizing your personal finances.
+A desktop application for tracking and reporting on personal finances using Google Sheets integration.
 
-## Features
+## Quick Start
 
-* Connects to Google Sheets to fetch income and expense data
-* Local processing and analysis of financial transactions
-* Exports reports and visual charts
+### Prerequisites
+- Python 3.12+
+- Google Sheets API credentials
 
-## Prerequisites
+### Setup
 
-* Python 3.12 or higher
-* [pyinstaller](https://www.pyinstaller.org/) (for building the standalone executable)
+```bash
+# Clone and setup
+git clone git@github.com:eashangallage/MoneyMirror.git
+cd MoneyMirror
+git checkout debian
 
-## Installation
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate
 
-1. **Clone the repository and select the `debian` branch**
+# Install dependencies
+pip install -e .
+```
 
-   ```bash
-   git clone git@github.com:eashangallage/MoneyMirror.git
-   cd MoneyMirror
-   git fetch origin
-   git checkout debian
-   ```
-
-2. **Create and activate a virtual environment**
-
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate
-   ```
-
-3. **Install the package in editable mode**
-
-   ```bash
-   pip install -e .
-   ```
-
-## Running from Source
-
-Once installed in your environment, you can start MoneyMirror directly:
+### Run
 
 ```bash
 moneymirror
 ```
 
-*(You no longer need to prefix with `python -m`.)*
-
-## Building a Standalone Executable
-
-To package MoneyMirror into a standalone application, run:
-
+Or via module:
 ```bash
-pyinstaller --name moneymirror --onedir --windowed --add-data "src/moneymirror/resources:." src/moneymirror/main.py
+python -m moneymirror
 ```
 
-After the build completes, you'll find the executable in the `dist/moneymirror/` directory.
+## Build Standalone Executable
 
-## Testing
+```bash
+pyinstaller moneymirror.spec
+```
+
+Output: `dist/moneymirror/`
+
+## Test
 
 ```bash
 pytest
 ```
 
-## Contributing
+## Features
 
-Contributions, issues, and feature requests are welcome!
+- Google Sheets integration for data sync
+- Detailed transaction reports with filtering
+- PDF/CSV export functionality
+- Summary reports with credit/debit calculations
+- Multi-month data management
 
 ## License
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+MIT

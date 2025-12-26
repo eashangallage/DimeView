@@ -207,6 +207,36 @@ class MoneyMirrorModel:
     def get_us_states(self):
         return self.US_STATES.copy()
     
+    def format_state_input(self, state_input: str) -> str:
+        """
+        Convert user input (abbreviation or partial name) to full format.
+        Examples:
+            'AL' -> 'AL: Alabama'
+            'CA' -> 'CA: California'
+            'california' -> 'CA: California'
+        Returns the formatted state string if found, otherwise returns input unchanged.
+        """
+        state_input = state_input.strip().upper()
+        if not state_input:
+            return ''
+        
+        # Try to find by exact abbreviation match first (e.g., 'AL')
+        for state in self.US_STATES:
+            abbr = state.split(':')[0].strip()
+            if abbr == state_input:
+                return state
+        
+        # Try to find by state name (case-insensitive)
+        for state in self.US_STATES:
+            parts = state.split(':')
+            abbr = parts[0].strip()
+            name = parts[1].strip().upper()
+            if name.startswith(state_input) or state_input in name:
+                return state
+        
+        # If not found, return original input (will be caught by validation)
+        return state_input.title() if state_input else ''
+    
     def get_header_indices(self):
         return list(self.HEADER_IDX.keys())
 
@@ -217,8 +247,11 @@ class MoneyMirrorModel:
             for row in info['rows']:
                 if len(row) > self.HEADER_IDX['load_no']-1:
                     ids.add(row[self.HEADER_IDX['load_no']-1])
-        lst = sorted(filter(lambda x: x and x != "Other", ids))
-        return lst
+        # Filter out empty and "Other", then sort by numeric value
+        filtered_ids = [x for x in ids if x and x != "Other"]
+        # Sort by numeric value (convert to int for proper ordering)
+        sorted_ids = sorted(filtered_ids, key=lambda x: int(x) if x.isdigit() else float('inf'))
+        return sorted_ids
 
     def get_all_driver_ids(self):
         # Build from in-memory rows
@@ -363,11 +396,14 @@ class MoneyMirrorModel:
             self._index.setdefault(load_no, []).append((title, new_row_num))
 
     def generate_detailed_report(
-        self, from_date, to_date, load_no=None, transaction=None
+        self, from_date, to_date, load_no=None, transaction=None, driver=None, from_state=None, to_state=None
     ):
         rows = []
         # index for load_no column
         ln_idx = self.HEADER_IDX['load_no'] - 1
+        driver_idx = self.HEADER_IDX['driver_id'] - 1
+        from_state_idx = self.HEADER_IDX['from_state'] - 1
+        to_state_idx = self.HEADER_IDX['to_state'] - 1
         # Read entirely from in-memory cache
         for title, info in self._memory_cache.items():
             for row in info['rows']:
@@ -382,8 +418,63 @@ class MoneyMirrorModel:
                 if to_date   and d > to_date:      continue
                 if load_no   and row[ln_idx] != load_no:      continue
                 if transaction and row[self.HEADER_IDX['transaction']-1] != transaction: continue
+                if driver and row[driver_idx] != driver: continue
+                if from_state and row[from_state_idx] != from_state: continue
+                if to_state and row[to_state_idx] != to_state: continue
                 rows.append(row)
         return rows
+
+    def get_latest_entry(self, rows):
+        """Extract the latest entry from a list of rows by date."""
+        if not rows:
+            return None
+        
+        latest = None
+        latest_date = None
+        for row in rows:
+            try:
+                d = datetime.strptime(row[0], '%Y/%m/%d').date()
+            except Exception:
+                continue
+            if latest_date is None or d > latest_date:
+                latest_date, latest = d, row
+        
+        return latest
+
+    def detect_field_changes(self, latest_entry, driver_id, truck_id, from_state, to_state, delivery_status, payment_status):
+        """
+        Detect field changes between the latest entry and new values.
+        Returns a list of change descriptions.
+        """
+        changes = []
+        if not latest_entry or len(latest_entry) < 9:
+            return changes
+        
+        # Extract old values from entry
+        # Row format: [date, load_no, driver_id, truck_id, from_state, to_state,
+        #              transaction, delivery_status, payment_status, credit, debit, details]
+        old_driver = latest_entry[2] if len(latest_entry) > 2 else ''
+        old_truck = latest_entry[3] if len(latest_entry) > 3 else ''
+        old_from = latest_entry[4] if len(latest_entry) > 4 else ''
+        old_to = latest_entry[5] if len(latest_entry) > 5 else ''
+        old_delivery = latest_entry[7] if len(latest_entry) > 7 else ''
+        old_payment = latest_entry[8] if len(latest_entry) > 8 else ''
+        
+        # Detect changes
+        if driver_id and driver_id != old_driver:
+            changes.append(f"Driver ID: {old_driver} → {driver_id}")
+        if truck_id and truck_id != old_truck:
+            changes.append(f"Truck ID: {old_truck} → {truck_id}")
+        if from_state and from_state != old_from:
+            changes.append(f"From State: {old_from} → {from_state}")
+        if to_state and to_state != old_to:
+            changes.append(f"To State: {old_to} → {to_state}")
+        if delivery_status and delivery_status != old_delivery:
+            changes.append(f"Delivery Status: {old_delivery} → {delivery_status}")
+        if payment_status and payment_status != old_payment:
+            changes.append(f"Payment Status: {old_payment} → {payment_status}")
+        
+        return changes
 
     def export_detailed_csv(self, rows, path):
         with open(path, 'w', newline='') as f:
@@ -393,9 +484,9 @@ class MoneyMirrorModel:
             writer.writerows(rows)
 
     def generate_summary_report(
-        self, from_date, to_date, load_no=None, transaction=None
+        self, from_date, to_date, load_no=None, transaction=None, driver=None, from_state=None, to_state=None
     ):
-        rows = self.generate_detailed_report(from_date, to_date, load_no, transaction)
+        rows = self.generate_detailed_report(from_date, to_date, load_no, transaction, driver, from_state, to_state)
         credit_col = self.HEADER_IDX['credit'] - 1
         debit_col = self.HEADER_IDX['debit'] - 1
         total_credit = sum(_parse_amount(r[credit_col]) for r in rows)
@@ -407,24 +498,180 @@ class MoneyMirrorModel:
             'net': f"${total_credit - total_debit:,.2f}"
         }
 
-    def export_summary_pdf(self, summary, path):
-        c = canvas.Canvas(path, pagesize=letter)
-        width, height = letter
+    def export_summary_pdf(self, summary, path, rows=None):
+        from reportlab.lib import colors
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import inch
+        
+        # Create PDF with Platypus for better table handling
+        doc = SimpleDocTemplate(path, pagesize=letter, topMargin=0.5*inch, bottomMargin=0.5*inch,
+                               leftMargin=0.5*inch, rightMargin=0.5*inch)
+        
+        story = []
+        styles = getSampleStyleSheet()
+        
+        # Add logo if available
         logo_path = resource_path('resources/logo.png')
         if logo_path.exists():
-            img = ImageReader(str(logo_path))
-            iw, ih = img.getSize()
-            aspect = ih / iw
-            w = 300
-            h = w * aspect
-            c.drawImage(img, (width - w) / 2, height - h - 50, w, h)
-        text_y = height - (h + 80)
-        c.setFont('Helvetica', 12)
-        c.drawString(100, text_y, f'Time Period: {summary["time_period"]}')
-        c.drawString(100, text_y - 20, f'Total Credit: {summary["total_credit"]}')
-        c.drawString(100, text_y - 40, f'Total Debit: {summary["total_debit"]}')
-        c.drawString(100, text_y - 60, f'Net: {summary["net"]}')
-        c.showPage()
-        c.save()
+            from reportlab.platypus import Image
+            try:
+                logo = Image(str(logo_path), width=2*inch, height=1.5*inch)
+                story.append(logo)
+                story.append(Spacer(1, 0.3*inch))
+            except:
+                pass
+        
+        # Add summary title
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontSize=18,
+            textColor=colors.HexColor('#1a73e8'),
+            spaceAfter=0.2*inch,
+            alignment=1  # CENTER
+        )
+        story.append(Paragraph("Financial Summary Report", title_style))
+        story.append(Spacer(1, 0.2*inch))
+        
+        # Add summary statistics
+        summary_style = ParagraphStyle(
+            'Summary',
+            parent=styles['Normal'],
+            fontSize=11,
+            spaceAfter=0.1*inch
+        )
+        story.append(Paragraph(f"<b>Time Period:</b> {summary['time_period']}", summary_style))
+        story.append(Paragraph(f"<b>Total Credit:</b> {summary['total_credit']}", summary_style))
+        story.append(Paragraph(f"<b>Total Debit:</b> {summary['total_debit']}", summary_style))
+        story.append(Paragraph(f"<b>Net:</b> {summary['net']}", summary_style))
+        story.append(Spacer(1, 0.3*inch))
+        
+        # Add detailed table if rows are provided
+        if rows:
+            story.append(Paragraph("Detailed Transactions", title_style))
+            story.append(Spacer(1, 0.2*inch))
+            
+            # Prepare table data with custom columns for PDF
+            # We'll exclude delivery_status and payment_status, and merge from_state/to_state into Trip
+            headers = self.get_header_indices()
+            
+            # Column indices (0-based)
+            date_idx = self.HEADER_IDX['date'] - 1
+            load_no_idx = self.HEADER_IDX['load_no'] - 1
+            driver_id_idx = self.HEADER_IDX['driver_id'] - 1
+            truck_id_idx = self.HEADER_IDX['truck_id'] - 1
+            from_state_idx = self.HEADER_IDX['from_state'] - 1
+            to_state_idx = self.HEADER_IDX['to_state'] - 1
+            transaction_idx = self.HEADER_IDX['transaction'] - 1
+            credit_idx = self.HEADER_IDX['credit'] - 1
+            debit_idx = self.HEADER_IDX['debit'] - 1
+            
+            # Define the columns to display in PDF (excluding delivery_status, payment_status, and details)
+            pdf_headers = ['Date', 'Load No.', 'Driver ID', 'Truck ID', 'Trip', 'Transaction', 'Credit', 'Debit']
+            
+            # Build table data
+            table_data = []
+            raw_data = [pdf_headers]  # Store raw data for width calculation
+            
+            for row in rows:
+                # Safely extract values, ensuring we don't get corrupted data
+                date_val = str(row[date_idx]).strip() if date_idx < len(row) else ""
+                load_no_val = str(row[load_no_idx]).strip() if load_no_idx < len(row) else ""
+                driver_id_val = str(row[driver_id_idx]).strip() if driver_id_idx < len(row) else ""
+                truck_id_val = str(row[truck_id_idx]).strip() if truck_id_idx < len(row) else ""
+                
+                # Extract state values
+                from_state = str(row[from_state_idx]).strip() if from_state_idx < len(row) else ""
+                to_state = str(row[to_state_idx]).strip() if to_state_idx < len(row) else ""
+                
+                # Extract just the abbreviation (first 2 characters before ':')
+                from_abbr = from_state.split(':')[0].strip() if from_state else ""
+                to_abbr = to_state.split(':')[0].strip() if to_state else ""
+                
+                # Create Trip column in format "AL-NY"
+                trip = f"{from_abbr}-{to_abbr}" if from_abbr or to_abbr else ""
+                
+                # Extract transaction type - must be a valid transaction type
+                transaction_raw = str(row[transaction_idx]).strip() if transaction_idx < len(row) else ""
+                # Take only the first valid transaction type word
+                for valid_trans in self.TRANSACTION_TYPES:
+                    if valid_trans.lower() in transaction_raw.lower():
+                        transaction_clean = valid_trans
+                        break
+                else:
+                    # If no valid transaction found, take first word only
+                    transaction_clean = transaction_raw.split()[0] if transaction_raw else ""
+                
+                # Extract credit and debit, remove any non-numeric characters except decimal and comma
+                credit_val = str(row[credit_idx]).strip() if credit_idx < len(row) else ""
+                debit_val = str(row[debit_idx]).strip() if debit_idx < len(row) else ""
+                
+                # Build row with selected columns - clean data
+                pdf_row = [
+                    date_val,
+                    load_no_val,
+                    driver_id_val,
+                    truck_id_val,
+                    trip,
+                    transaction_clean,
+                    credit_val,
+                    debit_val,
+                ]
+                raw_data.append(pdf_row)
+            
+            # Calculate the maximum width for Load No. column
+            max_load_no_width = len(pdf_headers[1])  # Header "Load No."
+            for row_idx in range(1, len(raw_data)):
+                load_no_text = str(raw_data[row_idx][1]) if 1 < len(raw_data[row_idx]) else ""
+                max_load_no_width = max(max_load_no_width, len(load_no_text))
+            
+            # Set fixed column widths (in characters) - INCREASED for better spacing
+            # 0=Date, 1=Load No., 2=Driver ID, 3=Truck ID, 4=Trip, 5=Transaction, 6=Credit, 7=Debit
+            column_char_widths = [13, max_load_no_width, 10, 10, 9, 25, 12, 12]
+            
+            # Convert character widths to inches using 0.07 inches per character (wider spacing)
+            col_widths = [width * 0.07 * inch for width in column_char_widths]
+            
+            # Add padding spaces to the actual cell content
+            table_data = []
+            for row_idx, row in enumerate(raw_data):
+                padded_row = []
+                for col_idx, cell_text in enumerate(row):
+                    # Add one space prefix and one space suffix to each cell
+                    padded_cell = f" {cell_text} "
+                    padded_row.append(padded_cell)
+                table_data.append(padded_row)
+            
+            # Create table with calculated column widths
+            table = Table(table_data, colWidths=col_widths, repeatRows=1)
+            table.setStyle(TableStyle([
+                # Header styling
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#4CAF50')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 9),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 6),
+                ('TOPPADDING', (0, 0), (-1, 0), 6),
+                
+                # Body styling
+                ('ALIGN', (0, 1), (-1, -1), 'CENTER'),
+                ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+                ('FONTSIZE', (0, 1), (-1, -1), 8),
+                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f0f0f0')]),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                ('LEFTPADDING', (0, 0), (-1, -1), 2),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 2),
+                ('TOPPADDING', (0, 0), (-1, -1), 3),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('WORDWRAP', (0, 0), (-1, -1), False),
+            ]))
+            
+            story.append(table)
+        
+        # Build PDF
+        doc.build(story)
 
         
