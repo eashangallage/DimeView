@@ -5,6 +5,9 @@ on:
   push:
     branches:
       - debian
+      - main
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 jobs:

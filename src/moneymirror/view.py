@@ -168,6 +168,13 @@ class DataEntryTab(QWidget):
         self.custom_load_edit.setEnabled(False)
         self.custom_load_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
+        # Fraction input widget
+        self.fraction_edit = QLineEdit()
+        self.fraction_edit.setPlaceholderText("e.g., 3")
+        self.fraction_edit.setText("3")
+        self.fraction_edit.setEnabled(False)
+        self.fraction_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
         # GroupBox to visually connect options
         load_box = QGroupBox("📦 Load No.")
         grid = QGridLayout(load_box)
@@ -175,8 +182,14 @@ class DataEntryTab(QWidget):
         # Add radio buttons and inputs in grid columns 0 and 1 respectively
         grid.addWidget(self.existing_load_radio, 0, 0, alignment=Qt.AlignmentFlag.AlignLeft)
         grid.addWidget(self.load_no_combo, 0, 1)
-        grid.addWidget(self.custom_load_radio, 1, 0, alignment=Qt.AlignmentFlag.AlignLeft)
-        grid.addWidget(self.custom_load_edit, 1, 1)
+        
+        # Add Fraction label and input below "Use Load No." (indented with spacing)
+        fraction_label = QLabel("    Fraction (%):")
+        grid.addWidget(fraction_label, 1, 0, alignment=Qt.AlignmentFlag.AlignLeft)
+        grid.addWidget(self.fraction_edit, 1, 1)
+        
+        grid.addWidget(self.custom_load_radio, 2, 0, alignment=Qt.AlignmentFlag.AlignLeft)
+        grid.addWidget(self.custom_load_edit, 2, 1)
 
         # Optional: set column minimum width and stretch to improve appearance
         grid.setColumnMinimumWidth(0, 160)  # adjust to fit radio buttons nicely
@@ -280,6 +293,8 @@ class DataEntryTab(QWidget):
 
         self.date_edit.setDate(QDate.currentDate())
         self.load_no_combo.clearEditText()
+        self.fraction_edit.setText("3")
+        self.fraction_edit.setEnabled(True)  # Enable since Use Load No. is checked
         self.driver_id_combo.setCurrentIndex(-1)
         self.truck_id_combo.setCurrentIndex(-1)
         self.from_state_combo.setCurrentIndex(-1)
@@ -295,7 +310,8 @@ class DataEntryTab(QWidget):
         """Enable combo when existing is checked; else enable custom edit."""
         self.load_no_combo.setEnabled(checked)
         self.custom_load_edit.setEnabled(not checked)
-
+        # Enable fraction input only when "Use Load No." is selected
+        self.fraction_edit.setEnabled(checked)
         if not checked: # custom load selected
             self.custom_load_edit.setText("Other")
         else:
@@ -486,27 +502,123 @@ class ReportsTab(QWidget):
             'load_no': 'Load No.',
             'driver_id': 'Driver ID',
             'truck_id': 'Truck ID',
-            'from_state': 'From State',
-            'to_state': 'To State',
+            'trip': 'Trip',  # New combined column
             'transaction': 'Transaction',
             'delivery_status': 'Delivery Status',
             'payment_status': 'Payment Status',
             'credit': 'Credit',
             'debit': 'Debit',
+            'fraction': 'Fraction %',
             'details': 'Details'
         }
         
+        # Identify indices for From/To state to combine them
+        try:
+            from_idx = column_headers.index('from_state')
+            to_idx = column_headers.index('to_state')
+        except ValueError:
+            from_idx = -1
+            to_idx = -1
+
+        # Build new headers list
+        new_headers = []
+        trip_col_index = -1
+        
+        for i, h in enumerate(column_headers):
+            if h == 'from_state':
+                new_headers.append('trip')
+                trip_col_index = len(new_headers) - 1
+            elif h == 'to_state':
+                continue # Skip, already handled by 'trip'
+            else:
+                new_headers.append(h)
+
         # Convert headers to readable names
-        readable_headers = [header_mapping.get(h, h) for h in column_headers]
+        readable_headers = [header_mapping.get(h, h) for h in new_headers]
         
         self.detailed_table.clear()
         self.detailed_table.setColumnCount(len(readable_headers))
         self.detailed_table.setHorizontalHeaderLabels(readable_headers)
         self.detailed_table.setRowCount(len(rows))
+        
         for i, row in enumerate(rows):
+            new_row = []
+            from_val = ""
+            to_val = ""
+            
+            # Reconstruct row with combined Trip column
             for j, val in enumerate(row):
-                item = QTableWidgetItem(str(val))
-                self.detailed_table.setItem(i, j, item)
+                # Assuming column_headers matches row structure
+                if j < len(column_headers):
+                    col_name = column_headers[j]
+                    if col_name == 'from_state':
+                        from_val = str(val)
+                    elif col_name == 'to_state':
+                        to_val = str(val)
+                    else:
+                        new_row.append(val)
+            
+            # Insert Trip value at the correct position
+            if trip_col_index != -1:
+                trip_val = f"{from_val}-{to_val}" if from_val or to_val else ""
+                # We need to insert it where 'from_state' was (which is now 'trip')
+                # But since we appended non-state columns to new_row, we need to be careful.
+                # Actually, let's rebuild the row strictly following new_headers order
+                
+                final_row = []
+                for h in new_headers:
+                    if h == 'trip':
+                        final_row.append(f"{from_val}-{to_val}" if from_val or to_val else "")
+                    else:
+                        # Find index in original headers
+                        orig_idx = column_headers.index(h)
+                        if orig_idx < len(row):
+                            final_row.append(row[orig_idx])
+                        else:
+                            final_row.append("")
+                
+                for j, val in enumerate(final_row):
+                    item = QTableWidgetItem(str(val))
+                    self.detailed_table.setItem(i, j, item)
+            else:
+                # Fallback if states not found
+                for j, val in enumerate(row):
+                    item = QTableWidgetItem(str(val))
+                    self.detailed_table.setItem(i, j, item)
+
+        # Set column widths based on character counts from PDF export logic
+        # 1 char approx 10 pixels
+        char_widths = {
+            'date': 13,
+            'load_no': 10, # Default
+            'driver_id': 10,
+            'truck_id': 10,
+            'trip': 9,
+            'transaction': 25,
+            'delivery_status': 15,
+            'payment_status': 15,
+            'credit': 12,
+            'debit': 12,
+            'fraction': 10,
+            'details': 30
+        }
+
+        # Calculate dynamic max width for Load No. if present
+        if 'load_no' in column_headers:
+            ln_idx = column_headers.index('load_no')
+            max_len = 8 # "Load No."
+            for row in rows:
+                if ln_idx < len(row):
+                    max_len = max(max_len, len(str(row[ln_idx])))
+            char_widths['load_no'] = max_len
+
+        # Apply widths
+        for col_idx, header_key in enumerate(new_headers):
+            if header_key in char_widths:
+                # Use 10px per character as a rough approximation
+                # Add a little padding (e.g. +10px)
+                pixel_width = (char_widths[header_key] * 10) + 10
+                self.detailed_table.setColumnWidth(col_idx, pixel_width)
 
     def enable_csv_download(self, export_func, rows):
         self.csv_download_button.setEnabled(True)

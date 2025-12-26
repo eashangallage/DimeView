@@ -328,10 +328,171 @@ class MoneyMirrorModel:
                     .execute()
             )
 
+    def _delete_fraction_entries(self, load_no, month_title):
+        """Delete all Fraction entries for a load in the given month."""
+        try:
+            # Get all rows for this sheet
+            rows = self._memory_cache.get(month_title, {}).get('rows', [])
+            if not rows:
+                return
+            
+            # Find rows to delete (those with Transaction='Fraction' and matching load_no)
+            rows_to_delete = []
+            ln_idx = self.HEADER_IDX['load_no'] - 1
+            transaction_idx = self.HEADER_IDX['transaction'] - 1
+            
+            for i, row in enumerate(rows):
+                if (len(row) > ln_idx and len(row) > transaction_idx and
+                    row[ln_idx] == load_no and row[transaction_idx] == 'Fraction'):
+                    actual_row_num = self._memory_cache[month_title]['start_row'] + i
+                    rows_to_delete.append(actual_row_num)
+            
+            # Delete rows in reverse order to maintain correct row numbers
+            for row_num in sorted(rows_to_delete, reverse=True):
+                self._execute_with_retry(lambda rn=row_num: 
+                    self.sheets_service.spreadsheets().batchUpdate(
+                        spreadsheetId=self.spreadsheet_id,
+                        body={'requests': [
+                            {'deleteDimension': {
+                                'range': {
+                                    'sheetId': self._get_sheet_id(month_title),
+                                    'dimension': 'ROWS',
+                                    'startIndex': rn - 1,
+                                    'endIndex': rn
+                                }
+                            }}
+                        ]}
+                    ).execute()
+                )
+        except Exception:
+            # Silently fail - if deletion fails, we'll just create duplicate
+            pass
+
+    def _get_sheet_id(self, sheet_title):
+        """Get the sheet ID for a given sheet title."""
+        if self.spreadsheet_metadata:
+            for sheet in self.spreadsheet_metadata.get('sheets', []):
+                if sheet['properties']['title'] == sheet_title:
+                    return sheet['properties']['sheetId']
+        return None
+    
+    def _find_fraction_entry_row(self, load_no, month_title):
+        """Find the row number of an existing Fraction entry for a load in the given month."""
+        try:
+            rows = self._memory_cache.get(month_title, {}).get('rows', [])
+            if not rows:
+                return None
+            
+            ln_idx = self.HEADER_IDX['load_no'] - 1
+            transaction_idx = self.HEADER_IDX['transaction'] - 1
+            
+            for i, row in enumerate(rows):
+                if (len(row) > ln_idx and len(row) > transaction_idx and
+                    row[ln_idx] == load_no and row[transaction_idx] == 'Fraction'):
+                    actual_row_num = self._memory_cache[month_title]['start_row'] + i
+                    return actual_row_num
+            
+            return None
+        except Exception:
+            return None
+    
+    def _get_load_total_credit(self, load_no, month_title):
+        """Calculate total credit amount for a load across all months."""
+        total_credit = 0.0
+        try:
+            # Use the index to find all occurrences of this load across all sheets
+            occurrences = self._index.get(load_no, [])
+            
+            # If no index entry (e.g. new load), fall back to checking current month only
+            if not occurrences:
+                rows = self._memory_cache.get(month_title, {}).get('rows', [])
+                occurrences = [(month_title, self._memory_cache[month_title]['start_row'] + i) 
+                               for i, _ in enumerate(rows)]
+
+            ln_idx = self.HEADER_IDX['load_no'] - 1
+            credit_idx = self.HEADER_IDX['credit'] - 1
+            trans_idx = self.HEADER_IDX['transaction'] - 1
+            
+            for sheet_title, row_num in occurrences:
+                # Get the row from cache
+                cache_entry = self._memory_cache.get(sheet_title)
+                if not cache_entry:
+                    continue
+                    
+                rows = cache_entry['rows']
+                start_row = cache_entry['start_row']
+                idx = row_num - start_row
+                
+                if 0 <= idx < len(rows):
+                    row = rows[idx]
+                    
+                    # Verify load no matches (should match if coming from index)
+                    if len(row) > ln_idx and str(row[ln_idx]) == str(load_no):
+                        # Skip Fraction entries to avoid double counting or circular logic
+                        if len(row) > trans_idx and row[trans_idx] == 'Fraction':
+                            continue
+                            
+                        if len(row) > credit_idx:
+                            total_credit += _parse_amount(str(row[credit_idx]))
+        except Exception:
+            pass
+        return total_credit
+
+    def _update_fraction_entry(self, load_no, month_title, date_val, driver_id, truck_id, 
+                               from_state, to_state, delivery_status, payment_status, 
+                               fraction_percent, details):
+        """Update existing Fraction entry or return False if not found."""
+        row_num = self._find_fraction_entry_row(load_no, month_title)
+        if row_num is None:
+            return False
+        
+        try:
+            # Calculate new total debit based on total credits for this load
+            total_credit = self._get_load_total_credit(load_no, month_title)
+            new_total_debit = total_credit * (fraction_percent / 100.0)
+
+            # Build the updated fraction row
+            load_cell = load_no if load_no else ''
+            fraction_row = [
+                date_val.strftime('%Y/%m/%d'),
+                load_cell,
+                driver_id or '',
+                truck_id or '',
+                from_state or '',
+                to_state or '',
+                'Fraction',
+                delivery_status,
+                payment_status,
+                '',  # No credit for fraction
+                str(new_total_debit) if new_total_debit else '',  # Debit column
+                details or ''
+            ]
+            
+            # Update the row in Google Sheets
+            sheet_name = month_title
+            range_name = f"{sheet_name}!A{row_num}:L{row_num}"
+            
+            self._execute_with_retry(lambda: self.sheets_service.spreadsheets().values().update(
+                spreadsheetId=self.spreadsheet_id,
+                range=range_name,
+                valueInputOption='USER_ENTERED',
+                body={'values': [fraction_row]}
+            ).execute())
+            
+            # Update memory cache
+            rows = self._memory_cache[month_title]['rows']
+            cache_idx = row_num - self._memory_cache[month_title]['start_row']
+            if 0 <= cache_idx < len(rows):
+                rows[cache_idx] = fraction_row
+            
+            return True
+        except Exception:
+            return False
+
     def append_entry(
         self, date, load_no, driver_id, truck_id, from_state, to_state,
         transaction, delivery_status, payment_status,
-        credit_amt, debit_amt, details
+        credit_amt, debit_amt, details, fraction_percent=3
     ):
         # Adjust for two-digit year entries (e.g. '25' -> 2025)
         if date.year < 100:
@@ -357,7 +518,7 @@ class MoneyMirrorModel:
             self._duplicate_template(month_title)
         # Prefix Load No. with apostrophe so Sheets treats it as text
         load_cell = f"{load_no}" if load_no else ''
-        # Build row in updated column order A:J
+        # Build row in updated column order A:L
         row = [
             date.strftime('%Y/%m/%d'),
             load_cell,
@@ -381,6 +542,53 @@ class MoneyMirrorModel:
             insertDataOption='OVERWRITE', # This prevents copying formatting from the row above
             body={'values': [row]}
         ).execute())
+        
+        # Update cache with new row immediately so fraction calculation can see it
+        title = month_title
+        entry_rows = self._memory_cache.setdefault(title, {'rows': [], 'start_row': 3})['rows']
+        entry_rows.append(row)
+        new_row_num = self._memory_cache[title]['start_row'] + len(entry_rows) - 1
+        if load_no:
+            self._index.setdefault(load_no, []).append((title, new_row_num))
+        
+        fraction_created = False
+        # If there's a credit amount and we have a load_no, update or create a Fraction entry
+        if load_no and credit_amt and transaction not in ['Fraction']:
+            # Try to update existing Fraction entry for this load in current month
+            fraction_updated = self._update_fraction_entry(load_no, month_title, date, driver_id, truck_id, 
+                                                           from_state, to_state, delivery_status, payment_status, 
+                                                           fraction_percent, details)
+            
+            # If no existing Fraction found, create a new one
+            if not fraction_updated:
+                # Calculate total debit based on total credits (which now includes the new entry)
+                total_credit = self._get_load_total_credit(load_no, month_title)
+                fraction_debit = total_credit * (fraction_percent / 100.0)
+
+                fraction_row = [
+                    date.strftime('%Y/%m/%d'),
+                    load_cell,
+                    driver_id or '',
+                    truck_id or '',
+                    from_state or '',
+                    to_state or '',
+                    'Fraction',  # Transaction type
+                    delivery_status,
+                    payment_status,
+                    '',  # No credit for fraction
+                    str(fraction_debit) if fraction_debit else '',  # Debit column
+                    details or ''
+                ]
+                # Append fraction entry
+                self._execute_with_retry(lambda: self.sheets_service.spreadsheets().values().append(
+                    spreadsheetId=self.spreadsheet_id,
+                    range=rng,
+                    valueInputOption='USER_ENTERED',
+                    insertDataOption='OVERWRITE',
+                    body={'values': [fraction_row]}
+                ).execute())
+                fraction_created = True
+        
         # Propagate statuses for this load_no across all existing entries
         if load_no:
             # Propagate status + any changed driver/truck/from/to values
@@ -388,12 +596,12 @@ class MoneyMirrorModel:
                 load_no, delivery_status, payment_status,
                 driver_id, truck_id, from_state, to_state
             )
-            # Also keep the new row in our in-memory cache + index
-            title = month_title
-            entry_rows = self._memory_cache.setdefault(title, {'rows': [], 'start_row': 3})['rows']
-            entry_rows.append(row)
-            new_row_num = self._memory_cache[title]['start_row'] + len(entry_rows) - 1
-            self._index.setdefault(load_no, []).append((title, new_row_num))
+            
+            # Also add fraction row to cache if created
+            if fraction_created:
+                entry_rows.append(fraction_row)
+                frac_row_num = self._memory_cache[title]['start_row'] + len(entry_rows) - 1
+                self._index.setdefault(load_no, []).append((title, frac_row_num))
 
     def generate_detailed_report(
         self, from_date, to_date, load_no=None, transaction=None, driver=None, from_state=None, to_state=None
@@ -441,7 +649,42 @@ class MoneyMirrorModel:
         
         return latest
 
-    def detect_field_changes(self, latest_entry, driver_id, truck_id, from_state, to_state, delivery_status, payment_status):
+    def get_latest_fraction(self, load_no):
+        """Get the latest fraction percentage for a load."""
+        if not load_no:
+            return 3  # Default
+        
+        try:
+            # Get all fraction entries for this load
+            rows = self.generate_detailed_report(None, None, load_no=load_no, transaction='Fraction')
+            if rows:
+                latest = self.get_latest_entry(rows)
+                if latest:
+                    # Calculate percent from debit and total credit
+                    try:
+                        date_str = latest[0]
+                        date_val = datetime.strptime(date_str, '%Y/%m/%d')
+                        month_title = date_val.strftime('%b %Y')
+                        
+                        debit_idx = self.HEADER_IDX['debit'] - 1
+                        fraction_debit = 0.0
+                        if len(latest) > debit_idx:
+                            fraction_debit = _parse_amount(str(latest[debit_idx]))
+                            
+                        total_credit = self._get_load_total_credit(load_no, month_title)
+                        
+                        if total_credit > 0:
+                            percent = (fraction_debit / total_credit) * 100
+                            # Round to nearest reasonable number (e.g. 3.0 instead of 2.9999)
+                            return round(percent, 2)
+                    except (ValueError, TypeError):
+                        pass
+        except Exception:
+            pass
+        
+        return 3  # Default
+
+    def detect_field_changes(self, latest_entry, driver_id, truck_id, from_state, to_state, delivery_status, payment_status, fraction_percent=None):
         """
         Detect field changes between the latest entry and new values.
         Returns a list of change descriptions.
@@ -452,13 +695,14 @@ class MoneyMirrorModel:
         
         # Extract old values from entry
         # Row format: [date, load_no, driver_id, truck_id, from_state, to_state,
-        #              transaction, delivery_status, payment_status, credit, debit, details]
+        #              transaction, delivery_status, payment_status, credit, debit, fraction, details]
         old_driver = latest_entry[2] if len(latest_entry) > 2 else ''
         old_truck = latest_entry[3] if len(latest_entry) > 3 else ''
         old_from = latest_entry[4] if len(latest_entry) > 4 else ''
         old_to = latest_entry[5] if len(latest_entry) > 5 else ''
         old_delivery = latest_entry[7] if len(latest_entry) > 7 else ''
         old_payment = latest_entry[8] if len(latest_entry) > 8 else ''
+        old_fraction = latest_entry[11] if len(latest_entry) > 11 else ''
         
         # Detect changes
         if driver_id and driver_id != old_driver:
@@ -473,6 +717,14 @@ class MoneyMirrorModel:
             changes.append(f"Delivery Status: {old_delivery} → {delivery_status}")
         if payment_status and payment_status != old_payment:
             changes.append(f"Payment Status: {old_payment} → {payment_status}")
+        if fraction_percent is not None:
+            try:
+                old_frac_float = float(old_fraction) if old_fraction else 3.0
+                if fraction_percent != old_frac_float:
+                    changes.append(f"Fraction: {old_frac_float}% → {fraction_percent}%")
+            except (ValueError, TypeError):
+                if fraction_percent != 3.0:
+                    changes.append(f"Fraction: 3% → {fraction_percent}%")
         
         return changes
 

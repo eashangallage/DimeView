@@ -251,6 +251,8 @@ class MoneyMirrorController:
         data_tab.load_no_combo.clear()
         data_tab.load_no_combo.setEditable(True)
         data_tab.load_no_combo.addItems(load_nos)
+        # Disable auto-completion for load_no to prevent partial matching
+        data_tab.load_no_combo.setCompleter(None)
 
         data_tab.driver_id_combo.clear()
         data_tab.driver_id_combo.setEditable(True)
@@ -264,7 +266,8 @@ class MoneyMirrorController:
         data_tab.transaction_combo.addItems(self.model.get_transaction_types())
 
         data_tab.delivery_combo.clear()
-        data_tab.delivery_combo.addItems(self.model.get_delivery_status_options())
+        delivery_opts = [''] + self.model.get_delivery_status_options()
+        data_tab.delivery_combo.addItems(delivery_opts)
 
         data_tab.payment_combo.clear()
         data_tab.payment_combo.addItems(self.model.get_payment_status_options())
@@ -304,6 +307,17 @@ class MoneyMirrorController:
             # Update the view with the latest entry data
             tab = self.main_window.data_entry_tab
             tab.populate_from_entry(latest_entry)
+            
+            # Also fetch and set the latest fraction value
+            latest_fraction = self.model.get_latest_fraction(load_no)
+            tab.fraction_edit.setText(str(latest_fraction))
+            tab.fraction_edit.setEnabled(True)
+            
+            # Clear transaction-specific fields for fresh entry
+            tab.transaction_combo.setCurrentIndex(-1)
+            tab.credit_edit.clear()
+            tab.debit_edit.clear()
+            tab.details_edit.clear()
         except (GoogleQuotaExceededError, HttpError) as e:
             # Silently fail on auto-populate (non-blocking operation)
             pass
@@ -325,7 +339,8 @@ class MoneyMirrorController:
         payment_status = data_tab.payment_combo.currentText()
         credit_text = data_tab.credit_edit.text().strip()
         debit_text = data_tab.debit_edit.text().strip()
-        details = data_tab.details_edit.toPlainText().strip()
+        fraction_text = data_tab.fraction_edit.text().strip()
+        user_details = data_tab.details_edit.toPlainText().strip()
 
         try:
             credit_amt = float(credit_text) if credit_text else 0.0
@@ -338,6 +353,16 @@ class MoneyMirrorController:
         except ValueError:
             QMessageBox.critical(None, "Error", f"Invalid debit amount: '{debit_text}'")
             return
+
+        try:
+            fraction_percent = float(fraction_text) if fraction_text else 3.0
+        except ValueError:
+            QMessageBox.critical(None, "Error", f"Invalid fraction percentage: '{fraction_text}'")
+            return
+        
+        # Build details with fraction info
+        fraction_info = f"Fraction {fraction_percent}%"
+        details = f"{fraction_info}" if not user_details else f"{fraction_info} - {user_details}"
 
         def validate_and_format_state(state_text, field_name, valid_states, model):
             """Validate state and convert abbreviations to full format. Empty values are allowed."""
@@ -390,10 +415,10 @@ class MoneyMirrorController:
                 prev_rows = self.model.generate_detailed_report(None, date_val, load_no, None)
                 latest_prev = self.model.get_latest_entry(prev_rows)
                 if latest_prev:
-                    # Get changes from model
+                    # Get changes from model (including fraction changes)
                     changes = self.model.detect_field_changes(
                         latest_prev, driver_id, truck_id, from_state, to_state,
-                        delivery_status, payment_status
+                        delivery_status, payment_status, fraction_percent
                     )
                     if changes:
                         msg = (
@@ -429,7 +454,7 @@ class MoneyMirrorController:
            date_val, load_no, driver_id, truck_id,
            from_state, to_state,
            transaction, delivery_status, payment_status,
-           credit_amt, debit_amt, details
+           credit_amt, debit_amt, details, fraction_percent
         )
         self.submit_worker.moveToThread(self.submit_thread)
         self.submit_thread.started.connect(self.submit_worker.run)
@@ -489,7 +514,8 @@ class MoneyMirrorController:
         self.loadnos_thread.start()
 
         # Populate transaction filter immediately (no async needed)
-        trans_opts = ["All"] + self.model.get_transaction_types()
+        # Add "Fraction" to the filter options as requested
+        trans_opts = ["All"] + self.model.get_transaction_types() + ["Fraction"]
         reports_tab.transaction_filter_combo.clear()
         reports_tab.transaction_filter_combo.addItems(trans_opts)
 
@@ -609,6 +635,22 @@ class MoneyMirrorController:
                 QMessageBox.critical(None, "Error", f"Error generating report: {error}")
             return
         
+        # Sort rows: Ascending Load No, with "Other" or non-numeric at the bottom
+        def sort_key(row):
+            # Load No is at index 1 (based on HEADER_IDX in model.py)
+            # HEADER_IDX = {'date': 1, 'load_no': 2, ...} -> index 1 in 0-indexed list
+            try:
+                load_val = row[1]
+                if not load_val:
+                    return (float('inf'), "")
+                # Try to convert to int for numeric sorting
+                return (int(load_val), "")
+            except (ValueError, TypeError):
+                # Non-numeric strings go to bottom
+                return (float('inf'), str(row[1]))
+
+        rows.sort(key=sort_key)
+
         # Store detailed rows for later PDF export
         self.current_detailed_rows = rows
         
