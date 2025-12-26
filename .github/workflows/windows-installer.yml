@@ -36,10 +36,15 @@ jobs:
             src/moneymirror/main.py
 
       - name: Install NSIS
-        run: choco install nsis -y
+        run: |
+          choco install nsis -y
+          # Add NSIS to PATH for the next step
+          echo "C:\Program Files (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Compile NSIS installer
-        run: makensis.exe -V2 scripts/installer.nsi
+        shell: pwsh
+        run: |
+          & 'C:\Program Files (x86)\NSIS\makensis.exe' -V2 scripts/installer.nsi
 
       - name: Upload Installer Artifact
         uses: actions/upload-artifact@v4
