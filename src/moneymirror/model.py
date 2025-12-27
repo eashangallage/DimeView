@@ -492,7 +492,7 @@ class MoneyMirrorModel:
     def append_entry(
         self, date, load_no, driver_id, truck_id, from_state, to_state,
         transaction, delivery_status, payment_status,
-        credit_amt, debit_amt, details, fraction_percent=3
+        credit_amt, debit_amt, details, fraction_percent=3.5
     ):
         # Adjust for two-digit year entries (e.g. '25' -> 2025)
         if date.year < 100:
@@ -553,7 +553,7 @@ class MoneyMirrorModel:
         
         fraction_created = False
         # If there's a credit amount and we have a load_no, update or create a Fraction entry
-        if load_no and credit_amt and transaction not in ['Fraction']:
+        if load_no and credit_amt and transaction not in ['Fraction'] and fraction_percent is not None:
             # Try to update existing Fraction entry for this load in current month
             fraction_updated = self._update_fraction_entry(load_no, month_title, date, driver_id, truck_id, 
                                                            from_state, to_state, delivery_status, payment_status, 
@@ -604,12 +604,13 @@ class MoneyMirrorModel:
                 self._index.setdefault(load_no, []).append((title, frac_row_num))
 
     def generate_detailed_report(
-        self, from_date, to_date, load_no=None, transaction=None, driver=None, from_state=None, to_state=None
+        self, from_date, to_date, load_no=None, transaction=None, driver=None, truck=None, from_state=None, to_state=None
     ):
         rows = []
         # index for load_no column
         ln_idx = self.HEADER_IDX['load_no'] - 1
         driver_idx = self.HEADER_IDX['driver_id'] - 1
+        truck_idx = self.HEADER_IDX['truck_id'] - 1
         from_state_idx = self.HEADER_IDX['from_state'] - 1
         to_state_idx = self.HEADER_IDX['to_state'] - 1
         # Read entirely from in-memory cache
@@ -627,6 +628,7 @@ class MoneyMirrorModel:
                 if load_no   and row[ln_idx] != load_no:      continue
                 if transaction and row[self.HEADER_IDX['transaction']-1] != transaction: continue
                 if driver and row[driver_idx] != driver: continue
+                if truck and row[truck_idx] != truck: continue
                 if from_state and row[from_state_idx] != from_state: continue
                 if to_state and row[to_state_idx] != to_state: continue
                 rows.append(row)
@@ -652,7 +654,7 @@ class MoneyMirrorModel:
     def get_latest_fraction(self, load_no):
         """Get the latest fraction percentage for a load."""
         if not load_no:
-            return 3  # Default
+            return 3.5  # Default
         
         try:
             # Get all fraction entries for this load
@@ -675,14 +677,14 @@ class MoneyMirrorModel:
                         
                         if total_credit > 0:
                             percent = (fraction_debit / total_credit) * 100
-                            # Round to nearest reasonable number (e.g. 3.0 instead of 2.9999)
+                            # Round to nearest reasonable number (e.g. 3.5 instead of 3.4999)
                             return round(percent, 2)
                     except (ValueError, TypeError):
                         pass
         except Exception:
             pass
         
-        return 3  # Default
+        return 3.5  # Default
 
     def detect_field_changes(self, latest_entry, driver_id, truck_id, from_state, to_state, delivery_status, payment_status, fraction_percent=None):
         """
@@ -719,12 +721,12 @@ class MoneyMirrorModel:
             changes.append(f"Payment Status: {old_payment} → {payment_status}")
         if fraction_percent is not None:
             try:
-                old_frac_float = float(old_fraction) if old_fraction else 3.0
+                old_frac_float = float(old_fraction) if old_fraction else 3.5
                 if fraction_percent != old_frac_float:
                     changes.append(f"Fraction: {old_frac_float}% → {fraction_percent}%")
             except (ValueError, TypeError):
-                if fraction_percent != 3.0:
-                    changes.append(f"Fraction: 3% → {fraction_percent}%")
+                if fraction_percent != 3.5:
+                    changes.append(f"Fraction: 3.5% → {fraction_percent}%")
         
         return changes
 
@@ -736,9 +738,9 @@ class MoneyMirrorModel:
             writer.writerows(rows)
 
     def generate_summary_report(
-        self, from_date, to_date, load_no=None, transaction=None, driver=None, from_state=None, to_state=None
+        self, from_date, to_date, load_no=None, transaction=None, driver=None, truck=None, from_state=None, to_state=None
     ):
-        rows = self.generate_detailed_report(from_date, to_date, load_no, transaction, driver, from_state, to_state)
+        rows = self.generate_detailed_report(from_date, to_date, load_no, transaction, driver, truck, from_state, to_state)
         credit_col = self.HEADER_IDX['credit'] - 1
         debit_col = self.HEADER_IDX['debit'] - 1
         total_credit = sum(_parse_amount(r[credit_col]) for r in rows)
@@ -755,24 +757,64 @@ class MoneyMirrorModel:
         from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
         from reportlab.lib.units import inch
+        try:
+            from pdfrw import PdfReader
+            from pdfrw.buildxobj import pagexobj
+            from pdfrw.toreportlab import makerl
+        except ImportError:
+            raise ImportError("pdfrw is required for PDF generation with templates. Please install it via 'pip install pdfrw'.")
+
+        def on_first_page(canvas, doc):
+            canvas.saveState()
+            try:
+                template_path = resource_path('resources/REDACTED_Letterhead.pdf')
+                if template_path.exists():
+                    template = PdfReader(str(template_path)).pages[0]
+                    template_xobj = pagexobj(template)
+                    canvas.doForm(makerl(canvas, template_xobj))
+            except Exception as e:
+                print(f"Error loading letterhead: {e}")
+            canvas.restoreState()
+
+        def on_later_pages(canvas, doc):
+            canvas.saveState()
+            try:
+                # Try the footer file name provided by user, fallback to the one found in directory
+                template_path = resource_path('resources/REDACTED_Footer.pdf')
+                if not template_path.exists():
+                    template_path = resource_path('resources/REDACTED_Letterhead_Footer.pdf')
+                
+                if template_path.exists():
+                    template = PdfReader(str(template_path)).pages[0]
+                    template_xobj = pagexobj(template)
+                    canvas.doForm(makerl(canvas, template_xobj))
+            except Exception as e:
+                print(f"Error loading footer: {e}")
+            canvas.restoreState()
         
         # Create PDF with Platypus for better table handling
-        doc = SimpleDocTemplate(path, pagesize=letter, topMargin=0.5*inch, bottomMargin=0.5*inch,
+        # Top margin 1 inch for later pages. Bottom margin 1.5 inch for footer.
+        doc = SimpleDocTemplate(path, pagesize=letter, topMargin=1.0*inch, bottomMargin=1.5*inch,
                                leftMargin=0.5*inch, rightMargin=0.5*inch)
         
         story = []
         styles = getSampleStyleSheet()
         
-        # Add logo if available
-        logo_path = resource_path('resources/logo.png')
-        if logo_path.exists():
-            from reportlab.platypus import Image
-            try:
-                logo = Image(str(logo_path), width=2*inch, height=1.5*inch)
-                story.append(logo)
-                story.append(Spacer(1, 0.3*inch))
-            except:
-                pass
+        # Spacer to clear the letterhead on the first page
+        # Letterhead is approx 2 inches. Top margin is 1 inch. Need ~1.5 inch spacer.
+        story.append(Spacer(1, 1.5*inch))
+
+        # Add creation date
+        date_style = ParagraphStyle(
+            'DateStyle',
+            parent=styles['Normal'],
+            fontSize=10,
+            textColor=colors.gray,
+            alignment=2  # RIGHT
+        )
+        creation_date = datetime.now().strftime('%B %d, %Y')
+        story.append(Paragraph(f"Report Generated: {creation_date}", date_style))
+        story.append(Spacer(1, 0.2*inch))
         
         # Add summary title
         title_style = ParagraphStyle(
@@ -924,6 +966,6 @@ class MoneyMirrorModel:
             story.append(table)
         
         # Build PDF
-        doc.build(story)
+        doc.build(story, onFirstPage=on_first_page, onLaterPages=on_later_pages)
 
         
