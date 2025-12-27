@@ -35,7 +35,7 @@ class SpreadsheetLoader(QObject):
 class DetailedReportGenerator(QObject):
     finished = pyqtSignal(object, object)  # data or None, error or None
 
-    def __init__(self, model, from_date, to_date, load_no, transaction, driver=None, from_state=None, to_state=None):
+    def __init__(self, model, from_date, to_date, load_no, transaction, driver=None, truck=None, from_state=None, to_state=None):
         super().__init__()
         self.model = model
         self.from_date = from_date
@@ -43,13 +43,14 @@ class DetailedReportGenerator(QObject):
         self.load_no = load_no
         self.transaction = transaction
         self.driver = driver
+        self.truck = truck
         self.from_state = from_state
         self.to_state = to_state
 
     def run(self):
         try:
             rows = self.model.generate_detailed_report(
-                self.from_date, self.to_date, self.load_no, self.transaction, self.driver,
+                self.from_date, self.to_date, self.load_no, self.transaction, self.driver, self.truck,
                 self.from_state, self.to_state
             )
             self.finished.emit(rows, None)
@@ -328,6 +329,9 @@ class MoneyMirrorController:
         date_val = data_tab.date_edit.date().toPyDate()
         if data_tab.existing_load_radio.isChecked():
             load_no = data_tab.load_no_combo.currentText().strip()
+            if not load_no:
+                QMessageBox.critical(None, "Error", "Please enter or select a Load No.")
+                return
         else:
             load_raw = data_tab.custom_load_edit.text().strip()
             load_no = load_raw if load_raw else "Other"
@@ -342,6 +346,10 @@ class MoneyMirrorController:
         fraction_text = data_tab.fraction_edit.text().strip()
         user_details = data_tab.details_edit.toPlainText().strip()
 
+        if not credit_text and not debit_text:
+             QMessageBox.critical(None, "Error", "Please input either Credit or Debit amount.")
+             return
+
         try:
             credit_amt = float(credit_text) if credit_text else 0.0
         except ValueError:
@@ -354,16 +362,20 @@ class MoneyMirrorController:
             QMessageBox.critical(None, "Error", f"Invalid debit amount: '{debit_text}'")
             return
 
-        try:
-            fraction_percent = float(fraction_text) if fraction_text else 3.0
-        except ValueError:
-            QMessageBox.critical(None, "Error", f"Invalid fraction percentage: '{fraction_text}'")
-            return
-        
-        # Build details with fraction info
-        fraction_info = f"Fraction {fraction_percent}%"
-        details = f"{fraction_info}" if not user_details else f"{fraction_info} - {user_details}"
+        fraction_percent = None
+        details = user_details
 
+        if data_tab.existing_load_radio.isChecked():
+            try:
+                fraction_percent = float(fraction_text) if fraction_text else 3.5
+            except ValueError:
+                QMessageBox.critical(None, "Error", f"Invalid fraction percentage: '{fraction_text}'")
+                return
+            
+            # Build details with fraction info
+            fraction_info = f"Fraction {fraction_percent}%"
+            details = f"{fraction_info}" if not user_details else f"{fraction_info} - {user_details}"
+        
         def validate_and_format_state(state_text, field_name, valid_states, model):
             """Validate state and convert abbreviations to full format. Empty values are allowed."""
             state_text = state_text.strip()
@@ -524,6 +536,11 @@ class MoneyMirrorController:
         reports_tab.driver_filter_combo.clear()
         reports_tab.driver_filter_combo.addItems(driver_opts)
 
+        # Populate truck filter immediately (no async needed)
+        truck_opts = ["All"] + self.model.get_all_truck_ids()
+        reports_tab.truck_filter_combo.clear()
+        reports_tab.truck_filter_combo.addItems(truck_opts)
+
         # Populate state filters with blank as default + all states
         state_opts = [""] + self.model.get_us_states()
         reports_tab.from_state_filter_combo.clear()
@@ -574,6 +591,7 @@ class MoneyMirrorController:
         to_date = reports_tab.to_date.date().toPyDate()
         load_no = reports_tab.load_no_filter_combo.currentText().strip()
         driver = reports_tab.driver_filter_combo.currentText()
+        truck = reports_tab.truck_filter_combo.currentText()
         from_state = reports_tab.from_state_filter_combo.currentText().strip()
         to_state = reports_tab.to_state_filter_combo.currentText().strip()
         transaction = reports_tab.transaction_filter_combo.currentText()
@@ -589,6 +607,8 @@ class MoneyMirrorController:
         
         if driver == "All":
             driver = None
+        if truck == "All":
+            truck = None
         if transaction == "All":
             transaction = None
         
@@ -606,13 +626,14 @@ class MoneyMirrorController:
             'load_no': load_no,
             'transaction': transaction,
             'driver': driver,
+            'truck': truck,
             'from_state': from_state,
             'to_state': to_state
         }
 
         self.detailed_thread = QThread()
         self.detailed_worker = DetailedReportGenerator(
-            self.model, from_date, to_date, load_no, transaction, driver, from_state, to_state
+            self.model, from_date, to_date, load_no, transaction, driver, truck, from_state, to_state
         )
         self.detailed_worker.moveToThread(self.detailed_thread)
         self.detailed_thread.started.connect(self.detailed_worker.run)
@@ -664,7 +685,7 @@ class MoneyMirrorController:
         filters = self.current_filters
         summary = self.model.generate_summary_report(
             filters['from_date'], filters['to_date'], filters['load_no'], filters['transaction'],
-            filters['driver'], filters['from_state'], filters['to_state']
+            filters['driver'], filters['truck'], filters['from_state'], filters['to_state']
         )
         reports_tab.populate_summary(summary)
         reports_tab.enable_pdf_download(self.model.export_summary_pdf, summary, rows)

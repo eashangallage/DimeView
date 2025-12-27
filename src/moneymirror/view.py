@@ -170,8 +170,8 @@ class DataEntryTab(QWidget):
 
         # Fraction input widget
         self.fraction_edit = QLineEdit()
-        self.fraction_edit.setPlaceholderText("e.g., 3")
-        self.fraction_edit.setText("3")
+        self.fraction_edit.setPlaceholderText("e.g., 3.5")
+        self.fraction_edit.setText("3.5")
         self.fraction_edit.setEnabled(False)
         self.fraction_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
@@ -293,7 +293,7 @@ class DataEntryTab(QWidget):
 
         self.date_edit.setDate(QDate.currentDate())
         self.load_no_combo.clearEditText()
-        self.fraction_edit.setText("3")
+        self.fraction_edit.setText("3.5")
         self.fraction_edit.setEnabled(True)  # Enable since Use Load No. is checked
         self.driver_id_combo.setCurrentIndex(-1)
         self.truck_id_combo.setCurrentIndex(-1)
@@ -427,6 +427,15 @@ class ReportsTab(QWidget):
         configure_combobox_height(self.driver_filter_combo, 10)
         driver_layout.addWidget(self.driver_filter_combo)
         row2_layout.addLayout(driver_layout)
+
+        # Truck filter
+        truck_layout = QVBoxLayout()
+        truck_layout.addWidget(QLabel("Truck:"))
+        self.truck_filter_combo = QComboBox()
+        self.truck_filter_combo.setEditable(True)
+        configure_combobox_height(self.truck_filter_combo, 10)
+        truck_layout.addWidget(self.truck_filter_combo)
+        row2_layout.addLayout(truck_layout)
         
         filters_section.addLayout(row2_layout)
         
@@ -663,6 +672,7 @@ class ReportsTab(QWidget):
         self.to_date.setDate(QDate.currentDate())
         self.load_no_filter_combo.setCurrentIndex(0)  # Select 'All'
         self.driver_filter_combo.setCurrentIndex(0)   # Select 'All'
+        self.truck_filter_combo.setCurrentIndex(0)    # Select 'All'
         self.from_state_filter_combo.setCurrentIndex(0)  # Select blank
         self.to_state_filter_combo.setCurrentIndex(0)    # Select blank
         self.transaction_filter_combo.setCurrentIndex(0) # Select 'All'
