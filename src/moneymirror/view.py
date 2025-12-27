@@ -14,6 +14,8 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import pyqtSignal, QDate, Qt, QObject, QEvent
 from PyQt6.QtGui import QFont
+from pathlib import Path
+import os
 
 def configure_combobox_height(combo_box, max_items=10):
     """Configure a QComboBox to show max items before scrolling."""
@@ -636,9 +638,21 @@ class ReportsTab(QWidget):
         except Exception:
             pass
         def save_csv():
-            path, _ = QFileDialog.getSaveFileName(self, "Save CSV", "", "CSV Files (*.csv)")
+            # Default to Downloads/MoneyMirror
+            default_dir = Path.home() / "Downloads" / "MoneyMirror"
+            try:
+                default_dir.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                # Fallback to home if permission denied or other error
+                default_dir = Path.home()
+
+            path, _ = QFileDialog.getSaveFileName(self, "Save CSV", str(default_dir), "CSV Files (*.csv)")
             if path:
-                export_func(rows, path)
+                try:
+                    export_func(rows, path)
+                    QMessageBox.information(self, "Success", f"Report saved to:\n{path}")
+                except Exception as e:
+                    QMessageBox.critical(self, "Error", f"Failed to save CSV:\n{str(e)}")
         self.csv_download_button.clicked.connect(save_csv)
 
     def enable_pdf_download(self, export_func, summary, rows=None):
@@ -648,13 +662,27 @@ class ReportsTab(QWidget):
         except Exception:
             pass
         def save_pdf():
-            path, _ = QFileDialog.getSaveFileName(self, "Save PDF", "", "PDF Files (*.pdf)")
+            # Default to Downloads/MoneyMirror
+            default_dir = Path.home() / "Downloads" / "MoneyMirror"
+            try:
+                default_dir.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                # Fallback to home if permission denied or other error
+                default_dir = Path.home()
+
+            path, _ = QFileDialog.getSaveFileName(self, "Save PDF", str(default_dir), "PDF Files (*.pdf)")
             if path:
-                # Pass both summary and rows if available
-                if rows is not None:
-                    export_func(summary, path, rows)
-                else:
-                    export_func(summary, path)
+                try:
+                    # Pass both summary and rows if available
+                    if rows is not None:
+                        export_func(summary, path, rows)
+                    else:
+                        export_func(summary, path)
+                    QMessageBox.information(self, "Success", f"Report saved to:\n{path}")
+                except Exception as e:
+                    import traceback
+                    traceback.print_exc()
+                    QMessageBox.critical(self, "Error", f"Failed to save PDF:\n{str(e)}")
         self.pdf_download_button.clicked.connect(save_pdf)
 
     def populate_summary(self, summary):
