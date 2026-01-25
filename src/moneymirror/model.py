@@ -170,10 +170,18 @@ class MoneyMirrorModel:
         # Build in-memory cache + index of every load_no → (sheet, row)
         self._memory_cache.clear()
         self._index.clear()
+        
+        # Regex for 'Mmm YYYY' format (e.g. 'Jan 2026', 'Dec 2025')
+        import re
+        sheet_pattern = re.compile(r'^[A-Z][a-z]{2}\s\d{4}$')
+        
         for sheet in meta.get('sheets', []):
             title = sheet['properties']['title']
-            if title == 'Template':
+            
+            # Skip if not a valid month/year sheet
+            if not sheet_pattern.match(title):
                 continue
+                
             resp = self._execute_with_retry(lambda: 
                 self.sheets_service.spreadsheets().values().get(
                     spreadsheetId=spreadsheet_id,
@@ -274,13 +282,358 @@ class MoneyMirrorModel:
         lst.append('Other')
         return lst
 
-    def _duplicate_template(self, new_title):
-        # Find the source 'Template' sheet ID
-        source_id = next(
+    def _ensure_trash_sheet(self):
+        """Ensures a 'Trash' sheet exists, creating it from Template if missing."""
+        has_trash = any(s['properties']['title'] == 'Trash' for s in self.spreadsheet_metadata['sheets'])
+        if not has_trash:
+            self._duplicate_template('Trash')
+
+    def delete_entry(self, sheet_name, row_num, row_data):
+        """
+        Soft-delete an entry:
+        1. Move to 'Trash' sheet.
+        2. Delete from original sheet.
+        3. Recalculate fractions if needed.
+        """
+        # 1. Archive to Trash
+        self._ensure_trash_sheet()
+        
+        # We need to clean the row data to ensure it matches the 12 columns + extra
+        # row_data might have metadata columns at the end, so slice to header length
+        cleaned_row = list(row_data[:12])
+        
+        # Ensure it has 12 columns padded
+        while len(cleaned_row) < 12:
+            cleaned_row.append('')
+            
+        trash_range = "Trash!A3"
+        self._execute_with_retry(lambda: self.sheets_service.spreadsheets().values().append(
+            spreadsheetId=self.spreadsheet_id,
+            range=trash_range,
+            valueInputOption='USER_ENTERED',
+            insertDataOption='OVERWRITE',
+            body={'values': [cleaned_row]}
+        ).execute())
+        
+        # 2. Delete from original sheet
+        # Find sheetId for the sheet_name
+        sheet_id = next(
             s['properties']['sheetId']
             for s in self.spreadsheet_metadata['sheets']
-            if s['properties']['title'] == 'Template'
+            if s['properties']['title'] == sheet_name
         )
+        
+        # Rows are 0-indexed in batchUpdate deleteDimension
+        # row_num is 1-based (from Sheets UI / our cache logic)
+        delete_idx = row_num - 1
+        
+        self._execute_with_retry(lambda: self.sheets_service.spreadsheets().batchUpdate(
+            spreadsheetId=self.spreadsheet_id,
+            body={'requests': [
+                {'deleteDimension': {
+                    'range': {
+                        'sheetId': sheet_id,
+                        'dimension': 'ROWS',
+                        'startIndex': delete_idx,
+                        'endIndex': delete_idx + 1
+                    }
+                }}
+            ]}
+        ).execute())
+        
+        # 3. Update Cache (Invalidate/Reload is safest)
+        # But for performance and consistency we should try to update it.
+        # Actually, simpler to just force a full reload of that month's cache next time
+        # or remove it now.
+        if sheet_name in self._memory_cache:
+            # We simply remove the specific row from the list
+            rows = self._memory_cache[sheet_name]['rows']
+            start_row = self._memory_cache[sheet_name]['start_row']
+            
+            # The index in the list is:
+            list_idx = row_num - start_row
+            
+            if 0 <= list_idx < len(rows):
+                del rows[list_idx]
+                
+                # IMPORTANT: Since we deleted a row, all rows AFTER this one
+                # in the sheet have shifted up by 1.
+                # Our metadata (start_row) remains same, so subsequent calculations
+                # for row indices (start_row + i) work fine for the *new* list state.
+                # However, if we had other cached indices (like self._index), they are now wrong.
+                
+                # So we must rebuild the index for this load_no
+                # Or easier: just clear the main index and rebuild lazily or now.
+                self._index = {}
+        
+        # 4. Handle Fraction Recalculation
+        ln_idx = self.HEADER_IDX['load_no'] - 1
+        transaction_idx = self.HEADER_IDX['transaction'] - 1
+        
+        load_no = cleaned_row[ln_idx] if len(cleaned_row) > ln_idx else None
+        transaction = cleaned_row[transaction_idx] if len(cleaned_row) > transaction_idx else ''
+        
+        # If we deleted a credit entry (income) for a load, we must update the fraction
+        if load_no and transaction != 'Fraction':
+            self._recalculate_fraction(load_no)
+                     
+    def _recalculate_fraction(self, load_no):
+        """
+        Recalculate and update the Fraction entry for a given Load No.
+        This is the single source of truth for fraction logic.
+        """
+        if not load_no or load_no == 'Other':
+            return
+
+        # 1. Find existing fraction entry and its location
+        # Scan all months in cache
+        fraction_loc = None  # (sheet_name, row_idx_in_list, row_data)
+        
+        ln_idx = self.HEADER_IDX['load_no'] - 1
+        transaction_idx = self.HEADER_IDX['transaction'] - 1
+        
+        for m_title, m_info in self._memory_cache.items():
+            rows = m_info['rows']
+            for i, r in enumerate(rows):
+                if (len(r) > transaction_idx and r[transaction_idx] == 'Fraction' and
+                    len(r) > ln_idx and str(r[ln_idx]) == str(load_no)):
+                    fraction_loc = (m_title, i, r)
+                    break
+            if fraction_loc:
+                break
+        
+        if not fraction_loc:
+            # If no fraction entry exists, we can't update it.
+            # (Creation logic is handled in append_entry for new entries)
+            return
+
+        sheet_name_frac, list_idx_frac, fraction_row = fraction_loc
+        
+        # 2. Determine the Fraction Percentage to use
+        # We try to extract it from the 'Details' column of the fraction row (e.g. "Fraction 3.5%...")
+        details_idx = self.HEADER_IDX['details'] - 1
+        details_text = fraction_row[details_idx] if len(fraction_row) > details_idx else ""
+        
+        fraction_percent = 3.5 # Default
+        import re
+        match = re.search(r'Fraction\s+(\d+(?:\.\d+)?)%', details_text)
+        if match:
+            fraction_percent = float(match.group(1))
+        
+        # 3. Calculate Total Credit for this Load No across ALL sheets
+        total_credit = 0.0
+        credit_idx = self.HEADER_IDX['credit'] - 1
+        
+        for m_title, m_info in self._memory_cache.items():
+            for r in m_info['rows']:
+                # Skip the fraction row itself to avoid circular math (though it should have 0 credit)
+                if (len(r) > transaction_idx and r[transaction_idx] == 'Fraction'):
+                    continue
+                
+                if (len(r) > ln_idx and str(r[ln_idx]) == str(load_no)):
+                    if len(r) > credit_idx:
+                        total_credit += _parse_amount(str(r[credit_idx]))
+
+        # 4. Calculate New Debit Amount
+        new_debit = total_credit * (fraction_percent / 100.0)
+        
+        # 5. Update the Fraction Row in local cache
+        debit_idx = self.HEADER_IDX['debit'] - 1
+        
+        # Ensure row is long enough
+        while len(fraction_row) < 12:
+            fraction_row.append('')
+            
+        fraction_row[debit_idx] = str(new_debit)
+        
+        # Update cache reference
+        self._memory_cache[sheet_name_frac]['rows'][list_idx_frac] = fraction_row
+        
+        # 6. Push Update to Google Sheet
+        # Calculate actual row number
+        actual_row_num = self._memory_cache[sheet_name_frac]['start_row'] + list_idx_frac
+        range_name = f"'{sheet_name_frac}'!A{actual_row_num}:L{actual_row_num}"
+        
+        # We send the whole row update
+        self._execute_with_retry(lambda: self.sheets_service.spreadsheets().values().update(
+            spreadsheetId=self.spreadsheet_id,
+            range=range_name,
+            valueInputOption='USER_ENTERED',
+            body={'values': [fraction_row]}
+        ).execute())
+
+    def _create_template_sheet(self):
+        """Creates the Template sheet if it's missing."""
+        # Add new sheet properties
+        requests = [
+            {'addSheet': {'properties': {'title': 'Template'}}}
+        ]
+        
+        response = self._execute_with_retry(lambda: self.sheets_service.spreadsheets().batchUpdate(
+            spreadsheetId=self.spreadsheet_id,
+            body={'requests': requests}
+        ).execute())
+        
+        new_sheet_id = response['replies'][0]['addSheet']['properties']['sheetId']
+
+        # Configure formatting and content
+        headers = [
+            'Date', 'Load No.', 'Driver ID', 'Truck ID', 'From State', 'To State',
+            'Transaction', 'Delivery Status', 'Payment Status', 'Credit', 'Debit', 'More Details'
+        ]
+        
+        update_requests = []
+        
+        # 1. Merge A1:L1
+        update_requests.append({
+            'mergeCells': {
+                'range': {
+                    'sheetId': new_sheet_id,
+                    'startRowIndex': 0, 'endRowIndex': 1,
+                    'startColumnIndex': 0, 'endColumnIndex': 12
+                },
+                'mergeType': 'MERGE_ALL'
+            }
+        })
+        
+        # 2. Main Table Headers and Title
+        rows_data = []
+        # Row 1 (A1: Merged Title)
+        rows_data.append({
+            'values': [{'userEnteredValue': {'stringValue': 'Monthly Revenue Sheet'}}]
+        })
+        # Row 2 (Headers)
+        header_cells = [{'userEnteredValue': {'stringValue': h}} for h in headers]
+        rows_data.append({'values': header_cells})
+
+        update_requests.append({
+            'updateCells': {
+                'start': {'sheetId': new_sheet_id, 'rowIndex': 0, 'columnIndex': 0},
+                'rows': rows_data,
+                'fields': 'userEnteredValue'
+            }
+        })
+        
+        # 3. Summary Section Values and Formulas (N1:P2)
+        summary_rows = [
+            {'values': [
+                {'userEnteredValue': {'stringValue': 'Total Income'}},
+                {'userEnteredValue': {'stringValue': 'Total Expense'}},
+                {'userEnteredValue': {'stringValue': 'Net'}}
+            ]},
+            {'values': [
+                {'userEnteredValue': {'formulaValue': '=SUM(INDIRECT("J3:J200"))'}},
+                {'userEnteredValue': {'formulaValue': '=SUM(INDIRECT("K3:K200"))'}},
+                {'userEnteredValue': {'formulaValue': '=N2-O2'}}
+            ]}
+        ]
+        
+        update_requests.append({
+            'updateCells': {
+                'start': {'sheetId': new_sheet_id, 'rowIndex': 0, 'columnIndex': 13}, # Col N is index 13
+                'rows': summary_rows,
+                'fields': 'userEnteredValue'
+            }
+        })
+
+        # 4. Formatting - Background Color for Summary (Light Yellow 3)
+        light_yellow = {'red': 1.0, 'green': 0.949, 'blue': 0.8}
+        borders = {
+             "top": {"style": "SOLID"},
+             "bottom": {"style": "SOLID"},
+             "left": {"style": "SOLID"},
+             "right": {"style": "SOLID"}
+        }
+
+        update_requests.append({
+            'repeatCell': {
+                'range': {
+                    'sheetId': new_sheet_id,
+                    'startRowIndex': 0, 'endRowIndex': 2,
+                    'startColumnIndex': 13, 'endColumnIndex': 16
+                },
+                'cell': {'userEnteredFormat': {'backgroundColor': light_yellow, "borders": borders}},
+                'fields': 'userEnteredFormat(backgroundColor,borders)'
+            }
+        })
+
+        # 5. Borders and Layout for Data Table (A1:L200)
+        # Apply borders to data rows (A2:L200)
+        update_requests.append({
+            'repeatCell': {
+                'range': {
+                    'sheetId': new_sheet_id,
+                    'startRowIndex': 1, 'endRowIndex': 200,
+                    'startColumnIndex': 0, 'endColumnIndex': 12
+                },
+                'cell': {'userEnteredFormat': {"borders": borders}},
+                'fields': 'userEnteredFormat(borders)'
+            }
+        })
+        
+        # Style Title (A1)
+        update_requests.append({
+             'repeatCell': {
+                'range': {
+                    'sheetId': new_sheet_id,
+                    'startRowIndex': 0, 'endRowIndex': 1,
+                    'startColumnIndex': 0, 'endColumnIndex': 1
+                },
+                'cell': {
+                    'userEnteredFormat': {
+                        'horizontalAlignment': 'CENTER',
+                        'textFormat': {'bold': True, 'fontSize': 12},
+                        "borders": borders
+                    }
+                },
+                'fields': 'userEnteredFormat(horizontalAlignment,textFormat,borders)'
+            }
+        })
+        
+        # Bold Headers (Row 2)
+        update_requests.append({
+             'repeatCell': {
+                'range': {
+                    'sheetId': new_sheet_id,
+                    'startRowIndex': 1, 'endRowIndex': 2,
+                    'startColumnIndex': 0, 'endColumnIndex': 12
+                },
+                'cell': {
+                    'userEnteredFormat': {
+                        'textFormat': {'bold': True},
+                         "borders": borders
+                    }
+                },
+                'fields': 'userEnteredFormat(textFormat,borders)'
+            }
+        })
+
+        self._execute_with_retry(lambda: self.sheets_service.spreadsheets().batchUpdate(
+            spreadsheetId=self.spreadsheet_id,
+            body={'requests': update_requests}
+        ).execute())
+
+    def _duplicate_template(self, new_title):
+        # Check if 'Template' exists
+        source_sheet = next(
+            (s for s in self.spreadsheet_metadata['sheets'] if s['properties']['title'] == 'Template'),
+            None
+        )
+
+        if not source_sheet:
+            self._create_template_sheet()
+            # Refresh metadata to get the new 'Template' sheet info
+            meta = self._execute_with_retry(lambda: self.sheets_service.spreadsheets().get(
+                spreadsheetId=self.spreadsheet_id,
+                includeGridData=False
+            ).execute())
+            self.spreadsheet_metadata = meta
+            source_sheet = next(
+                s for s in self.spreadsheet_metadata['sheets']
+                if s['properties']['title'] == 'Template'
+            )
+        
+        source_id = source_sheet['properties']['sheetId']
 
         # Step 1: Duplicate the Template sheet. The correct formulas are already on it.
         self._execute_with_retry(lambda: self.sheets_service.spreadsheets().batchUpdate(
@@ -302,8 +655,49 @@ class MoneyMirrorModel:
         driver_id=None, truck_id=None, from_state=None, to_state=None
     ):
         updates = []
-        for title, row_num in self._index.get(load_no, []):
+        
+        # We need to scan all loaded data because _index might not cover all cases
+        # or might be slightly out of sync if we relied solely on it.
+        # But for performance _index is preferred.
+        # Let's ensure _index is robust or fallback to scan if needed.
+        # Actually, let's just make sure we check `_index` is being populated correctly.
+        # It is populated on `select_spreadsheet` (initial load) and `append_entry`.
+        
+        occurrences = self._index.get(load_no, [])
+
+        # If _index is empty but we have load_no, it might be that validation failed earlier
+        # OR we just added the very first entry (which is in the index now via append_entry).
+        
+        for title, row_num in occurrences:
+            # Check if this row actually exists in cache before queuing update to avoid errors
+            # (e.g. if row was deleted but index not fully cleared, though delete_entry clears index)
+            if title not in self._memory_cache: continue
+            
             # 1) Propagate driver/truck/from/to if passed
+            # We must be careful not to overwrite with empty strings if the user didn't Intent to change them.
+            # However, the controller passes current values from the form.
+            # If the user leaves them blank in the form, they ARE blank.
+            
+            # The issue might be that batchUpdate (values().batchUpdate) expects 'data' list.
+            
+            # Let's also update the in-memory cache to keep it in sync!
+            # Otherwise subsequent operations in this session will see old data.
+            
+            cache_row_idx = row_num - self._memory_cache[title]['start_row']
+            if 0 <= cache_row_idx < len(self._memory_cache[title]['rows']):
+                 row = self._memory_cache[title]['rows'][cache_row_idx]
+                 
+                 # Update memory first
+                 if driver_id is not None: row[self.HEADER_IDX['driver_id']-1] = driver_id
+                 if truck_id is not None: row[self.HEADER_IDX['truck_id']-1] = truck_id
+                 if from_state is not None: row[self.HEADER_IDX['from_state']-1] = from_state
+                 if to_state is not None: row[self.HEADER_IDX['to_state']-1] = to_state
+                 
+                 row[self.HEADER_IDX['delivery_status']-1] = delivery_status
+                 row[self.HEADER_IDX['payment_status']-1] = payment_status
+                 
+                 self._memory_cache[title]['rows'][cache_row_idx] = row
+
             if any([driver_id, truck_id, from_state, to_state]):
                 vals = [
                     driver_id or '',
@@ -320,6 +714,7 @@ class MoneyMirrorModel:
                 'range': f"'{title}'!H{row_num}:I{row_num}",
                 'values': [[delivery_status, payment_status]]
             })
+            
         if updates:
             body = {'valueInputOption': 'USER_ENTERED', 'data': updates}
             self._execute_with_retry(lambda: 
@@ -552,19 +947,31 @@ class MoneyMirrorModel:
             self._index.setdefault(load_no, []).append((title, new_row_num))
         
         fraction_created = False
-        # If there's a credit amount and we have a load_no, update or create a Fraction entry
+        # If there's a credit amount and we have a load_no, ensure a Fraction entry exists
         if load_no and credit_amt and transaction not in ['Fraction'] and fraction_percent is not None:
-            # Try to update existing Fraction entry for this load in current month
-            fraction_updated = self._update_fraction_entry(load_no, month_title, date, driver_id, truck_id, 
-                                                           from_state, to_state, delivery_status, payment_status, 
-                                                           fraction_percent, details)
             
-            # If no existing Fraction found, create a new one
-            if not fraction_updated:
-                # Calculate total debit based on total credits (which now includes the new entry)
-                total_credit = self._get_load_total_credit(load_no, month_title)
-                fraction_debit = total_credit * (fraction_percent / 100.0)
+            # Check if Fraction entry exists for this load in ANY loaded sheet
+            fraction_exists = False
+            fraction_loc = None
+            ln_idx = self.HEADER_IDX['load_no'] - 1
+            tr_idx = self.HEADER_IDX['transaction'] - 1
+            
+            for m_title, info in self._memory_cache.items():
+                for i, r in enumerate(info['rows']):
+                    if (len(r) > tr_idx and r[tr_idx] == 'Fraction' and 
+                        len(r) > ln_idx and str(r[ln_idx]) == str(load_no)):
+                            fraction_exists = True
+                            fraction_loc = (m_title, i, r)
+                            break
+                if fraction_exists: break
 
+            if not fraction_exists:
+                # Create a placeholder Fraction row
+                # _recalculate_fraction will fill in the Debit amount
+                
+                # Format details strictly so _recalculate scans it correctly
+                frac_details = f"Fraction {fraction_percent}%"
+                
                 fraction_row = [
                     date.strftime('%Y/%m/%d'),
                     load_cell,
@@ -572,14 +979,15 @@ class MoneyMirrorModel:
                     truck_id or '',
                     from_state or '',
                     to_state or '',
-                    'Fraction',  # Transaction type
+                    'Fraction',
                     delivery_status,
                     payment_status,
-                    '',  # No credit for fraction
-                    str(fraction_debit) if fraction_debit else '',  # Debit column
-                    details or ''
+                    '',  # Credit
+                    '',  # Debit - to be filled by recalc
+                    frac_details
                 ]
-                # Append fraction entry
+                
+                # Use same range as the append above (it just appends to bottom)
                 self._execute_with_retry(lambda: self.sheets_service.spreadsheets().values().append(
                     spreadsheetId=self.spreadsheet_id,
                     range=rng,
@@ -587,7 +995,48 @@ class MoneyMirrorModel:
                     insertDataOption='OVERWRITE',
                     body={'values': [fraction_row]}
                 ).execute())
+                
+                # Add to local cache manually so Recalc finds it immediately
+                entry_rows.append(fraction_row)
                 fraction_created = True
+            
+            elif fraction_loc:
+                # Check provided fraction_percent matches existing one
+                # If changed, we update the Fraction row details so recalculate picks it up
+                m_title, list_idx, f_row = fraction_loc
+                details_idx = self.HEADER_IDX['details'] - 1
+                curr_details = f_row[details_idx] if len(f_row) > details_idx else ""
+                
+                # Extract current percent
+                curr_percent = 3.5
+                import re
+                match = re.search(r'Fraction\s+(\d+(?:\.\d+)?)%', curr_details)
+                if match:
+                    curr_percent = float(match.group(1))
+                    
+                if abs(curr_percent - fraction_percent) > 0.001:
+                     # Update details column to reflect new percentage
+                     new_details = f"Fraction {fraction_percent}%"
+                     
+                     while len(f_row) < 12: f_row.append('')
+                     f_row[details_idx] = new_details
+                     
+                     # Update cache
+                     self._memory_cache[m_title]['rows'][list_idx] = f_row
+                     
+                     # Update Sheet (Details column is 'L')
+                     actual_row_num = self._memory_cache[m_title]['start_row'] + list_idx
+                     u_range = f"'{m_title}'!L{actual_row_num}"
+                     
+                     self._execute_with_retry(lambda: self.sheets_service.spreadsheets().values().update(
+                        spreadsheetId=self.spreadsheet_id,
+                        range=u_range,
+                        valueInputOption='USER_ENTERED',
+                        body={'values': [[new_details]]}
+                    ).execute())
+
+            # Use the single source of truth to calculate value
+            self._recalculate_fraction(load_no)
         
         # Propagate statuses for this load_no across all existing entries
         if load_no:
@@ -597,9 +1046,10 @@ class MoneyMirrorModel:
                 driver_id, truck_id, from_state, to_state
             )
             
-            # Also add fraction row to cache if created
+            # Also add fraction row to cache index if created
             if fraction_created:
-                entry_rows.append(fraction_row)
+                # entry_rows was appended to above
+                # Re-calculate index
                 frac_row_num = self._memory_cache[title]['start_row'] + len(entry_rows) - 1
                 self._index.setdefault(load_no, []).append((title, frac_row_num))
 
@@ -615,7 +1065,7 @@ class MoneyMirrorModel:
         to_state_idx = self.HEADER_IDX['to_state'] - 1
         # Read entirely from in-memory cache
         for title, info in self._memory_cache.items():
-            for row in info['rows']:
+            for i, row in enumerate(info['rows']):
                 # pad to full width
                 if len(row) < len(self.HEADER_IDX):
                     row += [''] * (len(self.HEADER_IDX) - len(row))
@@ -631,7 +1081,12 @@ class MoneyMirrorModel:
                 if truck and row[truck_idx] != truck: continue
                 if from_state and row[from_state_idx] != from_state: continue
                 if to_state and row[to_state_idx] != to_state: continue
-                rows.append(row)
+                
+                # Create a copy and append metadata (sheet_name, row_num)
+                # row_num = start_row + index
+                actual_row_num = info['start_row'] + i
+                row_with_meta = list(row) + [title, actual_row_num]
+                rows.append(row_with_meta)
         return rows
 
     def get_latest_entry(self, rows):
@@ -652,7 +1107,10 @@ class MoneyMirrorModel:
         return latest
 
     def get_latest_fraction(self, load_no):
-        """Get the latest fraction percentage for a load."""
+        """
+        Get the latest fraction percentage for a load.
+        Extracts directly from the details column of the Fraction row.
+        """
         if not load_no:
             return 3.5  # Default
         
@@ -662,25 +1120,14 @@ class MoneyMirrorModel:
             if rows:
                 latest = self.get_latest_entry(rows)
                 if latest:
-                    # Calculate percent from debit and total credit
-                    try:
-                        date_str = latest[0]
-                        date_val = datetime.strptime(date_str, '%Y/%m/%d')
-                        month_title = date_val.strftime('%b %Y')
-                        
-                        debit_idx = self.HEADER_IDX['debit'] - 1
-                        fraction_debit = 0.0
-                        if len(latest) > debit_idx:
-                            fraction_debit = _parse_amount(str(latest[debit_idx]))
-                            
-                        total_credit = self._get_load_total_credit(load_no, month_title)
-                        
-                        if total_credit > 0:
-                            percent = (fraction_debit / total_credit) * 100
-                            # Round to nearest reasonable number (e.g. 3.5 instead of 3.4999)
-                            return round(percent, 2)
-                    except (ValueError, TypeError):
-                        pass
+                    # Extract from Details column
+                    details_idx = self.HEADER_IDX['details'] - 1
+                    details_text = latest[details_idx] if len(latest) > details_idx else ""
+                    
+                    import re
+                    match = re.search(r'Fraction\s+(\d+(?:\.\d+)?)%', details_text)
+                    if match:
+                        return float(match.group(1))
         except Exception:
             pass
         
@@ -719,14 +1166,18 @@ class MoneyMirrorModel:
             changes.append(f"Delivery Status: {old_delivery} → {delivery_status}")
         if payment_status and payment_status != old_payment:
             changes.append(f"Payment Status: {old_payment} → {payment_status}")
+        
         if fraction_percent is not None:
-            try:
-                old_frac_float = float(old_fraction) if old_fraction else 3.5
-                if fraction_percent != old_frac_float:
-                    changes.append(f"Fraction: {old_frac_float}% → {fraction_percent}%")
-            except (ValueError, TypeError):
-                if fraction_percent != 3.5:
-                    changes.append(f"Fraction: 3.5% → {fraction_percent}%")
+            # Extract existing fraction percentage from details
+            old_frac_float = 3.5 # Default
+            import re
+            match = re.search(r'Fraction\s+(\d+(?:\.\d+)?)%', old_fraction)
+            if match:
+                old_frac_float = float(match.group(1))
+            
+            # Compare with epsilon
+            if abs(fraction_percent - old_frac_float) > 0.001:
+                changes.append(f"Fraction: {old_frac_float}% → {fraction_percent}%")
         
         return changes
 

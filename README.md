@@ -1,6 +1,18 @@
-# MoneyMirror
+# MoneyMirror v2.0.0
 
 A desktop application for tracking and reporting on personal finances using Google Sheets integration.
+
+## New in v2.0.0
+- **Fraction Logic Overhaul**: Implemented "Single Source of Truth" for fraction calculations. Deleting or modifying entries now automatically recalculates the Fraction % debit, correcting prior inconsistencies.
+- **Soft Delete**: Deleting an entry now moves it to a "Trash" sheet instead of permanent deletion.
+- **Improved UI**: 
+  - Added "Delete Selected" button in Reports tab.
+  - Credit/Debit columns now formatted to 2 decimal places.
+  - "Fraction" entries are protected from direct deletion (must delete the source income entry).
+  - Status updates (Driver, Payment, etc.) now propagate instantly to all related entries without restart.
+- **Bug Fixes**: 
+  - Fixed "Template already exists" error.
+  - Fixed persistent pop-ups when Fraction % wasn't actually changed.
 
 ## Quick Start
 

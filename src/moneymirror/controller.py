@@ -552,6 +552,9 @@ class MoneyMirrorController:
         reports_tab.generate_button.clicked.connect(self.handle_generate_report)
         reports_tab.reset_button.clicked.connect(reports_tab.reset_filters)
 
+        # Connect Delete Button
+        reports_tab.delete_btn.clicked.connect(self.handle_delete_entry)
+
 
     def _on_load_nos_fetched(self, result):
         # This is now the last step in the loading process.
@@ -583,6 +586,71 @@ class MoneyMirrorController:
         # FINALLY, close the single loading dialog and show the ready main window.
         self.loading_dialog.close()
         self.main_window.show()
+
+    def handle_delete_entry(self):
+        reports_tab = self.main_window.reports_tab
+        selected_rows = reports_tab.detailed_table.selectionModel().selectedRows()
+        
+        if not selected_rows:
+            return
+
+        # We only support single row deletion for safety/simplicity initially, 
+        # though logic can handle multiple.
+        # Let's start with the first selected row.
+        row_idx = selected_rows[0].row()
+        
+        # Retrieve metadata from the first column item
+        item = reports_tab.detailed_table.item(row_idx, 0)
+        user_data = item.data(Qt.ItemDataRole.UserRole)
+        
+        if not user_data:
+            QMessageBox.warning(None, "Error", "Could not identify the selected entry. Please try refreshing the report.")
+            return
+            
+        sheet_name = user_data['sheet_name']
+        row_num = user_data['row_num']
+        original_row = user_data['original_row']
+        
+        # Check if trying to delete a Fraction entry
+        trans_idx = self.model.HEADER_IDX['transaction'] - 1
+        if len(original_row) > trans_idx and original_row[trans_idx] == 'Fraction':
+            QMessageBox.warning(None, "Action Denied", 
+                "You cannot delete a 'Fraction' entry directly.\n\n"
+                "Please delete the corresponding Credit entry (Income), "
+                "and the Fraction entry will be updated automatically."
+            )
+            return
+
+        # Confirm Deletion
+        confirm_msg = (
+            f"Are you sure you want to delete this entry?\n\n"
+            f"Sheet: {sheet_name}\n"
+            f"Row: {row_num}\n\n"
+            f"The entry will be moved to the 'Trash' sheet."
+        )
+        
+        reply = QMessageBox.question(
+            None, "Confirm Delete", confirm_msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            # Show loading dialog
+            self.loading = LoadingDialog("Deleting entry...")
+            self.loading.show()
+            QApplication.processEvents()
+            
+            try:
+                self.model.delete_entry(sheet_name, row_num, original_row)
+                self.loading.accept()
+                QMessageBox.information(None, "Success", "Entry deleted successfully.")
+                
+                # Refresh the report automatically
+                self.handle_generate_report()
+                
+            except Exception as e:
+                self.loading.accept()
+                QMessageBox.critical(None, "Error", f"Failed to delete entry:\n{str(e)}")
 
     def handle_generate_report(self):
         """Generate both detailed and summary reports."""

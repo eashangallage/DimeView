@@ -494,6 +494,15 @@ class ReportsTab(QWidget):
         
         # === DOWNLOAD BUTTONS (Vertical, at bottom above Reset) ===
         download_layout = QVBoxLayout()
+        buttons_row = QHBoxLayout()
+        
+        self.delete_btn = QPushButton("🗑️ Delete Selected")
+        self.delete_btn.setStyleSheet("background-color: #ffcccc; color: #cc0000; font-weight: bold;")
+        self.delete_btn.setEnabled(False)  # Disabled until row selected
+        
+        buttons_row.addWidget(self.delete_btn)
+        download_layout.addLayout(buttons_row)
+        
         self.csv_download_button = QPushButton("⬇️ Download Detailed Report as CSV")
         self.pdf_download_button = QPushButton("⬇️ Download Summary Report as PDF")
         download_layout.addWidget(self.csv_download_button)
@@ -505,6 +514,14 @@ class ReportsTab(QWidget):
         layout.addWidget(self.reset_button)
 
         self.setLayout(layout)
+        
+        # Enable selection
+        self.detailed_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.detailed_table.itemSelectionChanged.connect(self._on_selection_changed)
+
+    def _on_selection_changed(self):
+        selected_rows = self.detailed_table.selectionModel().selectedRows()
+        self.delete_btn.setEnabled(len(selected_rows) > 0)
 
     def populate_detailed_table(self, rows, column_headers):
         # Map coding names to human-readable names
@@ -553,13 +570,32 @@ class ReportsTab(QWidget):
         self.detailed_table.setRowCount(len(rows))
         
         for i, row in enumerate(rows):
+            # Extract metadata (sheet_name, row_num) if present
+            # They are appended at the end of the row, after the standard columns
+            # Standard columns count is len(column_headers)
+            # Metadata is usually at [-2] and [-1]
+            
+            row_data_len = len(column_headers)
+            user_data = None
+            
+            if len(row) >= row_data_len + 2:
+                # Metadata found
+                sheet_name = row[-2]
+                row_num = row[-1]
+                user_data = {'sheet_name': sheet_name, 'row_num': row_num, 'original_row': row}
+                
+                # Trim row to standard columns for display processing
+                display_row = row[:row_data_len]
+            else:
+                display_row = row
+
             new_row = []
             from_val = ""
             to_val = ""
             
             # Reconstruct row with combined Trip column
-            for j, val in enumerate(row):
-                # Assuming column_headers matches row structure
+            for j, val in enumerate(display_row):
+                # Assuming column_headers matches display_row structure
                 if j < len(column_headers):
                     col_name = column_headers[j]
                     if col_name == 'from_state':
@@ -572,9 +608,6 @@ class ReportsTab(QWidget):
             # Insert Trip value at the correct position
             if trip_col_index != -1:
                 trip_val = f"{from_val}-{to_val}" if from_val or to_val else ""
-                # We need to insert it where 'from_state' was (which is now 'trip')
-                # But since we appended non-state columns to new_row, we need to be careful.
-                # Actually, let's rebuild the row strictly following new_headers order
                 
                 final_row = []
                 for h in new_headers:
@@ -582,19 +615,46 @@ class ReportsTab(QWidget):
                         final_row.append(f"{from_val}-{to_val}" if from_val or to_val else "")
                     else:
                         # Find index in original headers
-                        orig_idx = column_headers.index(h)
-                        if orig_idx < len(row):
-                            final_row.append(row[orig_idx])
-                        else:
-                            final_row.append("")
+                        try:
+                            orig_idx = column_headers.index(h)
+                            if orig_idx < len(display_row):
+                                val = display_row[orig_idx]
+                                # Format numeric columns
+                                if h in ['credit', 'debit'] and val:
+                                    try:
+                                        # Remove currency symbols if present before parsing
+                                        clean_val = str(val).replace('$', '').replace(',', '')
+                                        val = "{:,.2f}".format(float(clean_val))
+                                    except ValueError:
+                                        pass
+                                final_row.append(val)
+                            else:
+                                final_row.append("")
+                        except ValueError:
+                             final_row.append("")
                 
                 for j, val in enumerate(final_row):
                     item = QTableWidgetItem(str(val))
+                    # Store metadata in the first column's item
+                    if j == 0 and user_data:
+                        item.setData(Qt.ItemDataRole.UserRole, user_data)
                     self.detailed_table.setItem(i, j, item)
             else:
                 # Fallback if states not found
-                for j, val in enumerate(row):
+                for j, val in enumerate(display_row):
+                    # Try to match index to header to check if it represents credit or debit
+                    if j < len(column_headers):
+                         col_name = column_headers[j]
+                         if col_name in ['credit', 'debit'] and val:
+                             try:
+                                 clean_val = str(val).replace('$', '').replace(',', '')
+                                 val = "{:,.2f}".format(float(clean_val))
+                             except ValueError:
+                                 pass
+                                 
                     item = QTableWidgetItem(str(val))
+                    if j == 0 and user_data:
+                        item.setData(Qt.ItemDataRole.UserRole, user_data)
                     self.detailed_table.setItem(i, j, item)
 
         # Set column widths based on character counts from PDF export logic
