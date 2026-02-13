@@ -3,7 +3,7 @@
 ;--------------------------------
 ; Product metadata
 !define PRODUCT_NAME    "MoneyMirror"
-!define PRODUCT_VERSION "2.0.0"
+!define PRODUCT_VERSION "2.0.1"
 !define INSTALLER_NAME  "${PRODUCT_NAME}-Setup-${PRODUCT_VERSION}.exe"
 
 ;--------------------------------

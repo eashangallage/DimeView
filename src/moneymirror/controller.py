@@ -613,13 +613,43 @@ class MoneyMirrorController:
         
         # Check if trying to delete a Fraction entry
         trans_idx = self.model.HEADER_IDX['transaction'] - 1
+        ln_idx = self.model.HEADER_IDX['load_no'] - 1
+        
         if len(original_row) > trans_idx and original_row[trans_idx] == 'Fraction':
-            QMessageBox.warning(None, "Action Denied", 
-                "You cannot delete a 'Fraction' entry directly.\n\n"
-                "Please delete the corresponding Credit entry (Income), "
-                "and the Fraction entry will be updated automatically."
-            )
-            return
+            load_no = original_row[ln_idx] if len(original_row) > ln_idx else ''
+            
+            # Check if there are any credit entries for this load_no
+            has_credit = False
+            if load_no:
+                # Get all rows for this load from model
+                related_rows = self.model.generate_detailed_report(None, None, load_no=load_no)
+                credit_col = self.model.HEADER_IDX['credit'] - 1
+                trans_col = self.model.HEADER_IDX['transaction'] - 1
+                
+                for r in related_rows:
+                    # Skip Fraction rows
+                    current_trans = r[trans_col] if len(r) > trans_col else ''
+                    if current_trans == 'Fraction':
+                        continue
+                        
+                    # Check for credit amount
+                    if len(r) > credit_col:
+                        val_str = str(r[credit_col]).replace('$', '').replace(',', '').strip()
+                        if val_str:
+                            try:
+                                if float(val_str) > 0:
+                                    has_credit = True
+                                    break
+                            except ValueError:
+                                pass
+
+            if has_credit:
+                QMessageBox.warning(None, "Action Denied", 
+                    f"You cannot delete this 'Fraction' entry directly because Load No '{load_no}' has associated Income (Credit).\n\n"
+                    "Please delete the corresponding Credit entry first, "
+                    "and the Fraction entry will be updated or removed automatically."
+                )
+                return
 
         # Confirm Deletion
         confirm_msg = (
