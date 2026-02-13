@@ -18,6 +18,16 @@ from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 import sys
+import re
+
+from reportlab.lib import colors
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+
+from pdfrw import PdfReader
+from pdfrw.buildxobj import pagexobj
+from pdfrw.toreportlab import makerl
 
 
 def _parse_amount(s: str) -> float:
@@ -172,7 +182,6 @@ class MoneyMirrorModel:
         self._index.clear()
         
         # Regex for 'Mmm YYYY' format (e.g. 'Jan 2026', 'Dec 2025')
-        import re
         sheet_pattern = re.compile(r'^[A-Z][a-z]{2}\s\d{4}$')
         
         for sheet in meta.get('sheets', []):
@@ -415,7 +424,7 @@ class MoneyMirrorModel:
         details_text = fraction_row[details_idx] if len(fraction_row) > details_idx else ""
         
         fraction_percent = 3.5 # Default
-        import re
+
         match = re.search(r'Fraction\s+(\d+(?:\.\d+)?)%', details_text)
         if match:
             fraction_percent = float(match.group(1))
@@ -435,7 +444,9 @@ class MoneyMirrorModel:
                         total_credit += _parse_amount(str(r[credit_idx]))
 
         # 4. Calculate New Debit Amount
-        new_debit = total_credit * (fraction_percent / 100.0)
+        # new_debit = total_credit * (fraction_percent / 100.0)
+        new_debit = round(total_credit * (fraction_percent / 100.0), 2)
+
         
         # 5. Update the Fraction Row in local cache
         debit_idx = self.HEADER_IDX['debit'] - 1
@@ -1009,7 +1020,7 @@ class MoneyMirrorModel:
                 
                 # Extract current percent
                 curr_percent = 3.5
-                import re
+
                 match = re.search(r'Fraction\s+(\d+(?:\.\d+)?)%', curr_details)
                 if match:
                     curr_percent = float(match.group(1))
@@ -1124,7 +1135,6 @@ class MoneyMirrorModel:
                     details_idx = self.HEADER_IDX['details'] - 1
                     details_text = latest[details_idx] if len(latest) > details_idx else ""
                     
-                    import re
                     match = re.search(r'Fraction\s+(\d+(?:\.\d+)?)%', details_text)
                     if match:
                         return float(match.group(1))
@@ -1170,7 +1180,6 @@ class MoneyMirrorModel:
         if fraction_percent is not None:
             # Extract existing fraction percentage from details
             old_frac_float = 3.5 # Default
-            import re
             match = re.search(r'Fraction\s+(\d+(?:\.\d+)?)%', old_fraction)
             if match:
                 old_frac_float = float(match.group(1))
@@ -1204,16 +1213,6 @@ class MoneyMirrorModel:
         }
 
     def export_summary_pdf(self, summary, path, rows=None):
-        from reportlab.lib import colors
-        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
-        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-        from reportlab.lib.units import inch
-        try:
-            from pdfrw import PdfReader
-            from pdfrw.buildxobj import pagexobj
-            from pdfrw.toreportlab import makerl
-        except ImportError:
-            raise ImportError("pdfrw is required for PDF generation with templates. Please install it via 'pip install pdfrw'.")
 
         def on_first_page(canvas, doc):
             canvas.saveState()
@@ -1348,9 +1347,13 @@ class MoneyMirrorModel:
                     # If no valid transaction found, take first word only
                     transaction_clean = transaction_raw.split()[0] if transaction_raw else ""
                 
-                # Extract credit and debit, remove any non-numeric characters except decimal and comma
-                credit_val = str(row[credit_idx]).strip() if credit_idx < len(row) else ""
-                debit_val = str(row[debit_idx]).strip() if debit_idx < len(row) else ""
+                # Extract credit and debit using helper function
+                credit_val = _parse_amount(str(row[credit_idx])) if credit_idx < len(row) else 0.0
+                debit_val = _parse_amount(str(row[debit_idx])) if debit_idx < len(row) else 0.0
+
+                # Clean and convert to float, then round to 2 decimal places, then back to string
+                credit_val = str(round(credit_val, 2))
+                debit_val = str(round(debit_val, 2))
                 
                 # Build row with selected columns - clean data
                 pdf_row = [
