@@ -1,4 +1,4 @@
-# MoneyMirror v2.0.0
+# DimeView v2.0.0
 
 A desktop application for tracking and reporting on personal finances using Google Sheets integration.
 
@@ -47,12 +47,10 @@ sudo apt install -y libxcb-xinerama0 libxcb-cursor0 libxkbcommon-x11-0 \
 #### 2. Clone and Setup
 
 ```bash
-# Clone the repository
-git clone https://github.com/eashangallage/MoneyMirror.git
+# Clone and setup
+git clone git@github.com:eashangallage/MoneyMirror.git
 cd MoneyMirror
-
-# (Optional) If you need to checkout a specific branch
-# git checkout debian
+git checkout debian
 
 # Create virtual environment
 python3 -m venv venv
@@ -70,19 +68,11 @@ After installation, you can launch MoneyMirror in several ways:
 
 **Option 1: Using the installed command (Recommended)**
 ```bash
-# Make sure virtual environment is activated
-source venv/bin/activate
-
-# Launch the application
 moneymirror
 ```
 
 **Option 2: Using Python module**
 ```bash
-# Make sure virtual environment is activated
-source venv/bin/activate
-
-# Launch via module
 python -m moneymirror
 ```
 
@@ -115,10 +105,10 @@ python src/moneymirror/main.py
 ## Build Standalone Executable
 
 ```bash
-pyinstaller moneymirror.spec
+pyinstaller dimeview.spec
 ```
 
-Output: `dist/moneymirror/`
+Output: `dist/dimeview/`
 
 ## Test
 

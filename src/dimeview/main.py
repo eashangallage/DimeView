@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 main.py
-Entry point for MoneyMirror application.
+Entry point for DimeView application.
 Initializes the application, model, view, and controller.
 """
 import sys
@@ -10,17 +10,17 @@ from pathlib import Path
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QIcon
 
-from moneymirror.model import MoneyMirrorModel
-from moneymirror.controller import MoneyMirrorController
+from dimeview.model import DimeViewModel
+from dimeview.controller import DimeViewController
 
 from importlib import resources
 
 def main():
-    """Start the MoneyMirror application."""
+    """Start the DimeView application."""
     # Create Qt application
     app = QApplication(sys.argv)
 
-    app.setDesktopFileName("MoneyMirror")
+    app.setDesktopFileName("DimeView")
 
     # figure out which icon to use
     if sys.platform.startswith("win"):
@@ -33,13 +33,13 @@ def main():
         icon_name = "icon.png"
 
     # set the “global” window icon here
-    icon_path = (resources.files("moneymirror").joinpath("resources").joinpath(icon_name))
+    icon_path = (resources.files("dimeview").joinpath("resources").joinpath(icon_name))
     icon = QIcon(str(icon_path))
     app.setWindowIcon(icon)
 
     # Initialize model and controller (which sets up the views)
-    model = MoneyMirrorModel()
-    controller = MoneyMirrorController(model)
+    model = DimeViewModel()
+    controller = DimeViewController(model)
 
     # Run the application event loop
     sys.exit(app.exec())
