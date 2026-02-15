@@ -33,11 +33,16 @@ sudo apt update
 # Install Python 3.12+ and required system dependencies
 sudo apt install -y python3 python3-pip python3-venv git
 
+# Verify Python version (should be 3.12 or higher)
+python3 --version
+
 # Install PyQt6 system dependencies (for GUI)
 sudo apt install -y libxcb-xinerama0 libxcb-cursor0 libxkbcommon-x11-0 \
     libegl1 libgl1 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
     libxcb-randr0 libxcb-render-util0 libxcb-shape0
 ```
+
+> **Note**: Ubuntu 24.04 LTS includes Python 3.12 by default. If you're using an older Ubuntu version with Python < 3.12, you may need to install Python 3.12 from a PPA or other source.
 
 #### 2. Clone and Setup
 
@@ -95,7 +100,8 @@ python src/moneymirror/main.py
 - Verify installation: `pip show moneymirror`
 
 **Issue: PyQt6 GUI errors (libEGL.so.1, libGL.so.1, etc.)**
-- Install missing Qt/OpenGL dependencies:
+- Install missing Qt/OpenGL dependencies (see Step 1: Install System Dependencies above)
+- If you skipped the system dependencies installation, run:
   ```bash
   sudo apt install -y libxcb-xinerama0 libxcb-cursor0 libxkbcommon-x11-0 \
       libegl1 libgl1 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
