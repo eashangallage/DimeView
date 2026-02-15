@@ -2,7 +2,7 @@
 """
 view.py
 
-View component for MoneyMirror application.
+View component for DimeView application.
 Defines PyQt6 GUI: StartupWindow for spreadsheet selection, Data Entry and Reports tabs.
 """
 from PyQt6.QtWidgets import (
@@ -54,7 +54,7 @@ class SharingInstructionsDialog(QDialog):
             "<li>In the 'Add people and groups' field, paste the email address below.</li>"
             "<li>Make sure <b>Editor</b> is selected as the role.</li>"
             "<li>Click <b>Send</b> to grant access.</li>"
-            "<li>Click <b>Close</b> and <b>Refresh 🔄</b> button on the MoneyMirror application.</li>"
+            "<li>Click <b>Close</b> and <b>Refresh 🔄</b> button on the DimeView application.</li>"
             "</ol>"
         )
         layout.addWidget(QLabel(instructions_text))
@@ -89,13 +89,13 @@ class StartupWindow(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("MoneyMirror")
+        self.setWindowTitle("DimeView")
         self.setMinimumWidth(350) # Set a minimum width for better spacing
 
         main_layout = QVBoxLayout(self)
 
         # 1. Add a prominent, centered application title
-        title_label = QLabel("MoneyMirror")
+        title_label = QLabel("DimeView")
         font = QFont()
         font.setPointSize(24)
         font.setBold(True)
@@ -698,8 +698,8 @@ class ReportsTab(QWidget):
         except Exception:
             pass
         def save_csv():
-            # Default to Downloads/MoneyMirror
-            default_dir = Path.home() / "Downloads" / "MoneyMirror"
+            # Default to Downloads/DimeView
+            default_dir = Path.home() / "Downloads" / "DimeView"
             try:
                 default_dir.mkdir(parents=True, exist_ok=True)
             except Exception:
@@ -722,8 +722,8 @@ class ReportsTab(QWidget):
         except Exception:
             pass
         def save_pdf():
-            # Default to Downloads/MoneyMirror
-            default_dir = Path.home() / "Downloads" / "MoneyMirror"
+            # Default to Downloads/DimeView
+            default_dir = Path.home() / "Downloads" / "DimeView"
             try:
                 default_dir.mkdir(parents=True, exist_ok=True)
             except Exception:
@@ -771,7 +771,7 @@ class MainWindow(QMainWindow):
     """Main application window containing tabs."""
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("MoneyMirror")
+        self.setWindowTitle("DimeView")
         tabs = QTabWidget()
         self.data_entry_tab = DataEntryTab()
         self.reports_tab    = ReportsTab()

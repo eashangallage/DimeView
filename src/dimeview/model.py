@@ -2,7 +2,7 @@
 """
 model.py
 
-Model component for MoneyMirror application.
+Model component for DimeView application.
 Handles Google Sheets API integration, offline cache, and data operations.
 """
 import json
@@ -65,7 +65,7 @@ class GoogleQuotaExceededError(Exception):
     pass
 
 
-class MoneyMirrorModel:
+class DimeViewModel:
     """Handles data logic: Google Sheets API and offline cache."""
 
     SCOPES = [
@@ -74,7 +74,7 @@ class MoneyMirrorModel:
         'https://www.googleapis.com/auth/drive'
     ]
 
-    CREDS_PATH = resource_path('config/MoneyMirrorCreds.json')
+    CREDS_PATH = resource_path('config/DimeViewCreds.json')
     CACHE_PATH = resource_path('cache/offline_cache.json')
 
     # Column indexes based on updated sheet layout (1-based)
