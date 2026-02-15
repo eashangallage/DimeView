@@ -2,7 +2,7 @@
 
 ;--------------------------------
 ; Product metadata
-!define PRODUCT_NAME    "MoneyMirror"
+!define PRODUCT_NAME    "DimeView"
 !define PRODUCT_VERSION "2.0.1"
 !define INSTALLER_NAME  "${PRODUCT_NAME}-Setup-${PRODUCT_VERSION}.exe"
 
@@ -29,7 +29,7 @@ Section "Install"
   SetOutPath "$INSTDIR"
 
   ; copy everything from the PyInstaller output
-  File /r "..\\dist\\moneymirror\\*.*"
+  File /r "..\\dist\\dimeview\\*.*"
 
   ; record install location in registry
   WriteRegStr HKLM "Software\\${PRODUCT_NAME}" "Install_Dir" "$INSTDIR"
