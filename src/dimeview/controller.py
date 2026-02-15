@@ -2,15 +2,15 @@
 """
 controller.py
 
-Controller component for MoneyMirror application.
+Controller component for DimeView application.
 Connects the model and views, handling user interactions and orchestrating data flow.
 """
 import sys
 from datetime import datetime
 from PyQt6.QtWidgets import QApplication, QMessageBox, QCompleter
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject
-from moneymirror.view import StartupWindow, MainWindow, LoadingDialog, SharingInstructionsDialog
-from moneymirror.model import MoneyMirrorModel, GoogleQuotaExceededError
+from dimeview.view import StartupWindow, MainWindow, LoadingDialog, SharingInstructionsDialog
+from dimeview.model import DimeViewModel, GoogleQuotaExceededError
 from googleapiclient.errors import HttpError
 
 
@@ -101,7 +101,7 @@ class EntrySubmitter(QObject):
 
 
 # --- Controller class ---
-class MoneyMirrorController:
+class DimeViewController:
     """Orchestrates interactions between the model and view."""
     def __init__(self, model):
         self.model = model
