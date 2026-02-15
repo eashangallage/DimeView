@@ -196,7 +196,7 @@ class DimeViewController:
         # DO NOT close the startup_window here, it's already closed.
         self.main_window = MainWindow()
         # Update the main window title to include the selected spreadsheet ID
-        self.main_window.setWindowTitle(f"MoneyMirror: {self.spreadsheet_name}")
+        self.main_window.setWindowTitle(f"DimeView: {self.spreadsheet_name}")
         self.setup_data_entry_tab()
         self.setup_reports_tab()
         # DO NOT show the main_window here. It will be shown when all data is loaded.
@@ -926,7 +926,7 @@ class LoadNosFetcher(QObject):
 
 
 if __name__ == '__main__':
-    model = MoneyMirrorModel()
+    model = DimeViewModel()
     app = QApplication(sys.argv)
-    controller = MoneyMirrorController(model)
+    controller = DimeViewController(model)
     sys.exit(app.exec())
