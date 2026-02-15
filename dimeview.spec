@@ -7,11 +7,11 @@ block_cipher = None
 
 # --------------------------------------------------------------------
 # Build a `datas` list of (src_path, dest_subdir)
-# so that every file under src/moneymirror/resources/
-# ends up under dist/moneymirror/resources/
+# so that every file under src/dimeview/resources/
+# ends up under dist/dimeview/resources/
 # --------------------------------------------------------------------
 proj_root = Path(os.getcwd())
-res_src = proj_root / "src" / "moneymirror" / "resources"
+res_src = proj_root / "src" / "dimeview" / "resources"
 
 datas = []
 for root, _, files in os.walk(res_src):
@@ -27,7 +27,7 @@ for root, _, files in os.walk(res_src):
 # Now wire that into Analysis
 # --------------------------------------------------------------------
 a = Analysis(
-    ["src/moneymirror/main.py"],
+    ["src/dimeview/main.py"],
     pathex=[str(proj_root)],
     binaries=[],
     datas=datas,               # <-- your resources will be pulled in here
@@ -44,7 +44,7 @@ exe = EXE(
     pyz,
     a.scripts,
     exclude_binaries=True,
-    name="moneymirror",
+    name="dimeview",
     debug=False,
     strip=False,
     upx=True,
@@ -60,6 +60,6 @@ coll = COLLECT(
     a.datas,   # <-- includes that `datas` list we built above
     strip=False,
     upx=True,
-    name="moneymirror",
+    name="dimeview",
 )
 

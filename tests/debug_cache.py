@@ -17,13 +17,13 @@ from datetime import datetime
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
-from moneymirror.model import MoneyMirrorModel
+from dimeview.model import DimeViewModel
 
 def debug_june_data():
     """Load data from spreadsheet and inspect June rows."""
     
     print("=" * 80)
-    print("MoneyMirror Debug: Inspecting Cache and Row Data")
+    print("DimeView Debug: Inspecting Cache and Row Data")
     print("=" * 80)
     
     # Get spreadsheet ID from command line
@@ -37,7 +37,7 @@ def debug_june_data():
     spreadsheet_id = sys.argv[1]
     
     # Initialize model
-    model = MoneyMirrorModel()
+    model = DimeViewModel()
     
     # Load data from test worksheet
     print(f"\n[1] Loading data from spreadsheet: {spreadsheet_id}")
