@@ -20,32 +20,91 @@ A desktop application for tracking and reporting on personal finances using Goog
 - Python 3.12+
 - Google Sheets API credentials
 
-### Setup
+### Ubuntu Installation & Launch
+
+#### 1. Install System Dependencies
+
+First, ensure your Ubuntu system has the required packages:
 
 ```bash
-# Clone and setup
-git clone git@github.com:eashangallage/MoneyMirror.git
+# Update package list
+sudo apt update
+
+# Install Python 3.12+ and required system dependencies
+sudo apt install -y python3 python3-pip python3-venv git
+
+# Install PyQt6 system dependencies (for GUI)
+sudo apt install -y libxcb-xinerama0 libxcb-cursor0 libxkbcommon-x11-0 \
+    libegl1 libgl1 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+    libxcb-randr0 libxcb-render-util0 libxcb-shape0
+```
+
+#### 2. Clone and Setup
+
+```bash
+# Clone the repository
+git clone https://github.com/eashangallage/MoneyMirror.git
 cd MoneyMirror
-git checkout debian
+
+# (Optional) If you need to checkout a specific branch
+# git checkout debian
 
 # Create virtual environment
 python3 -m venv venv
+
+# Activate virtual environment
 source venv/bin/activate
 
 # Install dependencies
 pip install -e .
 ```
 
-### Run
+#### 3. Launch the Application
 
+After installation, you can launch MoneyMirror in several ways:
+
+**Option 1: Using the installed command (Recommended)**
 ```bash
+# Make sure virtual environment is activated
+source venv/bin/activate
+
+# Launch the application
 moneymirror
 ```
 
-Or via module:
+**Option 2: Using Python module**
 ```bash
+# Make sure virtual environment is activated
+source venv/bin/activate
+
+# Launch via module
 python -m moneymirror
 ```
+
+**Option 3: Direct Python execution**
+```bash
+# From the MoneyMirror directory
+source venv/bin/activate
+python src/moneymirror/main.py
+```
+
+### Troubleshooting
+
+**Issue: "moneymirror: command not found"**
+- Make sure you've activated the virtual environment: `source venv/bin/activate`
+- Verify installation: `pip show moneymirror`
+
+**Issue: PyQt6 GUI errors (libEGL.so.1, libGL.so.1, etc.)**
+- Install missing Qt/OpenGL dependencies:
+  ```bash
+  sudo apt install -y libxcb-xinerama0 libxcb-cursor0 libxkbcommon-x11-0 \
+      libegl1 libgl1 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+      libxcb-randr0 libxcb-render-util0 libxcb-shape0
+  ```
+
+**Issue: Google Sheets API credentials not found**
+- Make sure you have set up Google Sheets API credentials
+- Place your credentials file in the appropriate location as per the application requirements
 
 ## Build Standalone Executable
 
