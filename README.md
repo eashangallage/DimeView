@@ -1,4 +1,4 @@
-# MoneyMirror v2.0.0
+# DimeView v2.0.0
 
 A desktop application for tracking and reporting on personal finances using Google Sheets integration.
 
@@ -24,8 +24,8 @@ A desktop application for tracking and reporting on personal finances using Goog
 
 ```bash
 # Clone and setup
-git clone git@github.com:eashangallage/MoneyMirror.git
-cd MoneyMirror
+git clone git@github.com:eashangallage/DimeView.git
+cd DimeView
 git checkout debian
 
 # Create virtual environment
@@ -39,21 +39,21 @@ pip install -e .
 ### Run
 
 ```bash
-moneymirror
+dimeview
 ```
 
 Or via module:
 ```bash
-python -m moneymirror
+python -m dimeview
 ```
 
 ## Build Standalone Executable
 
 ```bash
-pyinstaller moneymirror.spec
+pyinstaller dimeview.spec
 ```
 
-Output: `dist/moneymirror/`
+Output: `dist/dimeview/`
 
 ## Test
 

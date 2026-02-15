@@ -45,10 +45,10 @@ if __name__ == "__main__":
     print(f"Project Root detected: {project_root}")
 
     # Path 1: The one inside the package (likely the one your code uses)
-    pkg_config = os.path.join(project_root, "src", "moneymirror", "config", "MoneyMirrorCreds.json")
+    pkg_config = os.path.join(project_root, "src", "dimeview", "config", "DimeViewCreds.json")
     
     # Path 2: The one at the root (likely where you saved the real creds)
-    root_config = os.path.join(project_root, "config", "MoneyMirrorCreds.json")
+    root_config = os.path.join(project_root, "config", "DimeViewCreds.json")
 
     check_credential_file(pkg_config)
     check_credential_file(root_config)
