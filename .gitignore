@@ -3,7 +3,7 @@ venv/
 
 # Application config (credentials, etc.)
 config/
-src/moneymirror/config/
+src/dimeview/config/
 
 # PyInstaller build artifacts
 dist/
