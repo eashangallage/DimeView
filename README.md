@@ -12,12 +12,18 @@ You get the clean interface of a desktop app with the data safety of Google Driv
 
 ## 📸 What it looks like (Screenshots)
 
+### Data Entry & Dashboards
+
 | | |
 |:-------------------------:|:-------------------------:|
-| **Entry Screen** | **Detailed Reports** |
-| ![Data Entry](docs/images/data_entry_page.png) | ![Detailed Report](docs/images/example_detailed_report.png) |
-| **Reports Dashboard** | **Generated PDF Summary** |
-| ![Reports Dashboard](docs/images/reports_page.png) | ![PDF Summary](docs/images/example_summary_report.png) |
+| **Data Entry Tab** | **Reports Dashboard** |
+| ![Data Entry](docs/images/data_entry_page.png) | ![Reports Dashboard](docs/images/reports_page.png) |
+
+### Detailed Reports
+![Detailed Report](docs/images/example_detailed_report.png)
+
+### Generated PDF Summary
+![PDF Summary](docs/images/example_summary_report.png)
 
 ---
 
