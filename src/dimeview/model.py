@@ -8,6 +8,9 @@ Handles Google Sheets API integration, offline cache, and data operations.
 import json
 import csv
 import time
+import sys
+import os
+import re
 from pathlib import Path
 from datetime import datetime, date
 from io import BytesIO
@@ -17,9 +20,6 @@ from reportlab.lib.utils import ImageReader
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-import sys
-import os
-import re
 
 from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
