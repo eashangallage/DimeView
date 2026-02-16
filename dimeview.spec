@@ -50,7 +50,7 @@ exe = EXE(
     upx=True,
     console=False,
     windowed=True,
-    icon=str(res_src / "icon.png"),
+    icon=str(res_src / "icon.ico"),
 )
 
 coll = COLLECT(
