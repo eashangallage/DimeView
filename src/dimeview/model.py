@@ -18,6 +18,7 @@ from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 import sys
+import os
 import re
 
 from reportlab.lib import colors
@@ -56,7 +57,6 @@ def resource_path(relative_path):
         # Running as PyInstaller executable
         if is_writable and sys.platform.startswith('win'):
             # Use AppData for cache on Windows
-            import os
             base_path = Path(os.getenv('LOCALAPPDATA')) / 'DimeView'
         else:
             base_path = Path(sys.executable).parent
