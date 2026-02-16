@@ -33,3 +33,6 @@ __pycache__/
 
 # Ignore all text files
 *.txt
+# Runtime cache
+cache/
+src/dimeview/cache/
