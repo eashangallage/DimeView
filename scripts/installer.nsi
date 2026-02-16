@@ -3,7 +3,7 @@
 ;--------------------------------
 ; Product metadata
 !define PRODUCT_NAME    "DimeView"
-!define PRODUCT_VERSION "2.0.1"
+!define PRODUCT_VERSION "3.0.0"
 !define INSTALLER_NAME  "${PRODUCT_NAME}-Setup-${PRODUCT_VERSION}.exe"
 
 ;--------------------------------
