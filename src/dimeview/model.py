@@ -8,6 +8,9 @@ Handles Google Sheets API integration, offline cache, and data operations.
 import json
 import csv
 import time
+import sys
+import os
+import re
 from pathlib import Path
 from datetime import datetime, date
 from io import BytesIO
@@ -17,8 +20,6 @@ from reportlab.lib.utils import ImageReader
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-import sys
-import re
 
 from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
@@ -47,12 +48,18 @@ def _parse_amount(s: str) -> float:
 def resource_path(relative_path):
     """
     Return a path to a resource located relative to the executable/script.
-    Ignores PyInstaller internal temp folder (sys._MEIPASS).
+    For cache directory, uses AppData on Windows when running as executable.
     """
-
+    # Only cache directory should be writable (goes to AppData on Windows)
+    is_writable = True if "cache" in str(relative_path) else False
+    
     if getattr(sys, 'frozen', False):
         # Running as PyInstaller executable
-        base_path = Path(sys.executable).parent
+        if is_writable and sys.platform.startswith('win'):
+            # Use AppData for cache on Windows
+            base_path = Path(os.getenv('LOCALAPPDATA')) / 'DimeView'
+        else:
+            base_path = Path(sys.executable).parent
     else:
         # Running as script
         base_path = Path(__file__).parent
