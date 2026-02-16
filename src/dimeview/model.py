@@ -47,12 +47,19 @@ def _parse_amount(s: str) -> float:
 def resource_path(relative_path):
     """
     Return a path to a resource located relative to the executable/script.
-    Ignores PyInstaller internal temp folder (sys._MEIPASS).
+    For cache directory, uses AppData on Windows when running as executable.
     """
-
+    # Only cache directory should be writable (goes to AppData on Windows)
+    is_writable = True if "cache" in str(relative_path) else False
+    
     if getattr(sys, 'frozen', False):
         # Running as PyInstaller executable
-        base_path = Path(sys.executable).parent
+        if is_writable and sys.platform.startswith('win'):
+            # Use AppData for cache on Windows
+            import os
+            base_path = Path(os.getenv('LOCALAPPDATA')) / 'DimeView'
+        else:
+            base_path = Path(sys.executable).parent
     else:
         # Running as script
         base_path = Path(__file__).parent
