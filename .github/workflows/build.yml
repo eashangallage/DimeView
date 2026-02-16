@@ -26,25 +26,10 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        pip install pyinstaller
+        pip install .
+        pip install pytest
     
-    - name: Build executable with PyInstaller
+    - name: Run Tests
       run: |
-        pyinstaller moneymirror.spec
-    
-    - name: Upload artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: moneymirror-windows
-        path: dist/moneymirror/
-    
-    - name: Create Release
-      if: startsWith(github.ref, 'refs/tags/')
-      uses: softprops/action-gh-release@v1
-      with:
-        files: dist/moneymirror/**/*
-        draft: false
-        prerelease: false
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        pytest
+

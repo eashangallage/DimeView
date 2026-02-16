@@ -1,129 +1,138 @@
-# DimeView v2.0.0
+# DimeView - Simple Trucking Finance
 
-A desktop application for tracking and reporting on personal finances using Google Sheets integration.
+**The straightforward tracker for Owner-Operators.**
 
-## New in v2.0.0
-- **Fraction Logic Overhaul**: Implemented "Single Source of Truth" for fraction calculations. Deleting or modifying entries now automatically recalculates the Fraction % debit, correcting prior inconsistencies.
-- **Soft Delete**: Deleting an entry now moves it to a "Trash" sheet instead of permanent deletion.
-- **Improved UI**: 
-  - Added "Delete Selected" button in Reports tab.
-  - Credit/Debit columns now formatted to 2 decimal places.
-  - "Fraction" entries are protected from direct deletion (must delete the source income entry).
-  - Status updates (Driver, Payment, etc.) now propagate instantly to all related entries without restart.
-- **Bug Fixes**: 
-  - Fixed "Template already exists" error.
-  - Fixed persistent pop-ups when Fraction % wasn't actually changed.
+Tracking loads, expenses, and payments shouldn't be a headache. DimeView is a desktop app designed to get the math out of your way. It manages your trucking data and keeps everything synced with your own Google Sheet.
 
-## Quick Start
+You get the clean interface of a desktop app with the data safety of Google Drive.
 
-### Prerequisites
-- Python 3.12+
-- Google Sheets API credentials
+**Keywords**: Trucking Software, Owner Operator Finance, Expense Tracker, Load Management, Truck Driver Accounting, Google Sheets Integration, Settlement Calculator.
 
-### Ubuntu Installation & Launch
+---
 
-#### 1. Install System Dependencies
+## 📸 What it looks like (Screenshots)
 
-First, ensure your Ubuntu system has the required packages:
+| | |
+|:-------------------------:|:-------------------------:|
+| **Entry Screen** | **Detailed Reports** |
+| ![Data Entry](docs/images/data_entry_page.png) | ![Detailed Report](docs/images/example_detailed_report.png) |
+| **Reports Dashboard** | **Generated PDF Summary** |
+| ![Reports Dashboard](docs/images/reports_page.png) | ![PDF Summary](docs/images/example_summary_report.png) |
 
-```bash
-# Update package list
-sudo apt update
+---
 
-# Install Python 3.12+ and required system dependencies
-sudo apt install -y python3 python3-pip python3-venv git
+## 🚀 What it actually does
 
-# Verify Python version (should be 3.12 or higher)
-python3 --version
+*   **Google Sheets Sync**: Your data lives in your Google Sheet. If your computer crashes, your data is safe.
+*   **Splits Calculated Automatically**: Tired of figuring out who gets paid what? Set a percentage, and the app handles the debit/credit math for you.
+*   **Reports that make sense**: See exactly how much you made on a load or over a month. [(View Sample PDF)](docs/examples/sample_report.pdf)
+*   **Professional Invoices**: Generate PDFs with your own company logo and footer.
+*   **"Trash" Can**: Deleted something by mistake? It just moves to a "Trash" sheet so you can recover it later.
+*   **Multiple Assets**: Managing more than one truck or driver? We handle that too.
+*   **CSV Export**: Need to send data to your accountant? Export everything to CSV in one click. [(View Sample CSV)](docs/examples/sample_data.csv)
 
-# Install PyQt6 system dependencies (for GUI)
-sudo apt install -y libxcb-xinerama0 libxcb-cursor0 libxkbcommon-x11-0 \
-    libegl1 libgl1 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
-    libxcb-randr0 libxcb-render-util0 libxcb-shape0
-```
+---
 
-> **Note**: Ubuntu 24.04 LTS includes Python 3.12 by default. If you're using an older Ubuntu version with Python < 3.12, you may need to install Python 3.12 from a PPA or other source.
+## 🛠️ How to Install
 
-#### 2. Clone and Setup
+### Option A: The Windows Installer (Easiest)
 
-```bash
-# Clone and setup
-git clone git@github.com:eashangallage/MoneyMirror.git
-cd MoneyMirror
-git checkout debian
+If you just want to run the app on Windows, this is the way to go.
 
-# Create virtual environment
-python3 -m venv venv
+1.  **Download and Install**: Download the `DimeView-Setup-x.x.x.exe` from the latest release and run it.
+2.  **Locate the App Folder**: By default, it installs to `C:\Program Files\DimeView`.
+3.  **Add your Config**:
+    *   Navigate to `C:\Program Files\DimeView\config`.
+    *   Paste your `DimeViewCreds.json` file here. (Don't have one? See the "Configuration" section below).
+4.  **Add your Branding**:
+    *   Navigate to `C:\Program Files\DimeView\resources`.
+    *   Paste your company letterhead (named like `MyCompany_Letterhead.pdf`) and footer (named like `MyCompany_Footer.pdf`) here.
+5.  **Run**: Just double-click `dimeview.exe` or the desktop shortcut.
 
-# Activate virtual environment
-source venv/bin/activate
+> *Note: You will need Administrator permission to paste files into the Program Files folders. Just click "Continue" when Windows asks.*
 
-# Install dependencies
-pip install -e .
-```
+---
 
-#### 3. Launch the Application
+### Option B: Running from Source (Advanced / Linux)
 
-After installation, you can launch MoneyMirror in several ways:
+If you are a developer or running on Linux, follow these steps.
 
-**Option 1: Using the installed command (Recommended)**
-```bash
-moneymirror
-```
+**Prerequisites:**
+*   Python 3.12+
+*   Git
 
-**Option 2: Using Python module**
-```bash
-python -m moneymirror
-```
+**Windows (Source):**
 
-**Option 3: Direct Python execution**
-```bash
-# From the MoneyMirror directory
-source venv/bin/activate
-python src/moneymirror/main.py
-```
+1.  **Install Python 3.12+**: Make sure to check **"Add Python to PATH"** during installation.
+2.  **Clone & Setup**:
+    ```powershell
+    git clone https://github.com/eashangallage/MoneyMirror.git
+    cd MoneyMirror
+    python -m venv venv
+    .\venv\Scripts\activate
+    pip install -e .
+    ```
 
-### Troubleshooting
+**Ubuntu / Linux:**
 
-**Issue: "moneymirror: command not found"**
-- Make sure you've activated the virtual environment: `source venv/bin/activate`
-- Verify installation: `pip show moneymirror`
+1.  **Install Dependencies**:
+    ```bash
+    sudo apt update
+    sudo apt install -y python3 python3-pip python3-venv git \
+        libxcb-xinerama0 libxcb-cursor0 libxkbcommon-x11-0 \
+        libegl1 libgl1 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+        libxcb-randr0 libxcb-render-util0 libxcb-shape0
+    ```
+2.  **Clone & Launch**:
+    ```bash
+    git clone https://github.com/eashangallage/MoneyMirror.git
+    cd MoneyMirror
+    python3 -m venv venv
+    source venv/bin/activate
+    pip install -e .
+    
+    # Run it
+    dimeview
+    ```
 
-**Issue: PyQt6 GUI errors (libEGL.so.1, libGL.so.1, etc.)**
-- Install missing Qt/OpenGL dependencies (see Step 1: Install System Dependencies above)
-- If you skipped the system dependencies installation, run:
-  ```bash
-  sudo apt install -y libxcb-xinerama0 libxcb-cursor0 libxkbcommon-x11-0 \
-      libegl1 libgl1 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
-      libxcb-randr0 libxcb-render-util0 libxcb-shape0
-  ```
+---
 
-**Issue: Google Sheets API credentials not found**
-- Make sure you have set up Google Sheets API credentials
-- Place your credentials file in the appropriate location as per the application requirements
+## ⚙️ Configuration (Required for everyone)
 
-## Build Standalone Executable
+Before the app works, you need to give it keys to talk to Google Sheets.
 
-```bash
-pyinstaller dimeview.spec
-```
+### 1. Get your Google Keys
+1.  Go to the [Google Cloud Console](https://console.cloud.google.com/).
+2.  Make a new project (call it "DimeView" or whatever you want).
+3.  Enable **Google Sheets API** and **Google Drive API**.
+4.  Create a **Service Account** and download the JSON key.
+5.  **Critical Step**: Rename that file to `DimeViewCreds.json`.
 
-Output: `dist/dimeview/`
+### 2. Connect the Sheet
+1.  Open this [Google Sheet Template](https://docs.google.com/spreadsheets/d/10R0LpYzwKkCmlF6aSbygJFFXfO-GO6cAaZl4g_1cTZM/edit?gid=1473382810#gid=1473382810).
+2.  Click **Share**.
+3.  Open your `DimeViewCreds.json` file, find the `client_email`, and copy it.
+4.  Paste that email into the Share box on Google Sheets and give it **Editor** access.
 
-## Test
+### 3. Add your Company Branding (Optional)
+Want your logo on the PDF reports?
+1.  Create a PDF for your letterhead (top of page).
+2.  Create a PDF for your footer (bottom of page).
+3.  Name them so they end in `Letterhead.pdf` and `Footer.pdf`.
+    *   Example: `LionTrucking_Letterhead.pdf`
+4.  Place them in the `resources` folder (see Installation area for where that is).
 
-```bash
-pytest
-```
+---
 
-## Features
+## 📝 Troubleshooting
 
-- Google Sheets integration for data sync
-- Detailed transaction reports with filtering
-- PDF/CSV export functionality
-- Summary reports with credit/debit calculations
-- Multi-month data management
+*   **"dimeview: command not found"**: Did you activate the virtual environment (`source venv/bin/activate`)?
+*   **Google API Error**: Did you put `DimeViewCreds.json` in the `config` folder? Did you share the sheet with the email inside that JSON file?
+*   **PDFs look wrong**: Check your `resources` folder. The app looks for any file ending in `Letterhead.pdf` or `Footer.pdf`.
+
+---
 
 ## License
+This project is licensed under the **GPLv3 License** - see the [LICENSE](LICENSE) file for details.
 
-MIT
+Since this application uses **PyQt6**, which is licensed under GPLv3, this application must also be open-source under GPLv3. You are free to use, modify, and distribute this software, provided that any changes or derivative works are also open-sourced under the same license.

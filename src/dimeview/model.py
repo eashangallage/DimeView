@@ -1217,8 +1217,17 @@ class DimeViewModel:
         def on_first_page(canvas, doc):
             canvas.saveState()
             try:
-                template_path = resource_path('resources/Martin_Lion_LLC_Letterhead.pdf')
-                if template_path.exists():
+                # Look for any file ending in *Letterhead.pdf in resources
+                resources_dir = resource_path('resources')
+                template_path = None
+                
+                # Find first matching file
+                if resources_dir.exists():
+                    matches = list(resources_dir.glob('*Letterhead.pdf'))
+                    if matches:
+                        template_path = matches[0]
+
+                if template_path and template_path.exists():
                     template = PdfReader(str(template_path)).pages[0]
                     template_xobj = pagexobj(template)
                     canvas.doForm(makerl(canvas, template_xobj))
@@ -1229,12 +1238,17 @@ class DimeViewModel:
         def on_later_pages(canvas, doc):
             canvas.saveState()
             try:
-                # Try the footer file name provided by user, fallback to the one found in directory
-                template_path = resource_path('resources/Martin_Lion_LLC_Footer.pdf')
-                if not template_path.exists():
-                    template_path = resource_path('resources/Martin_Lion_LLC_Letterhead_Footer.pdf')
+                # Look for any file ending in *Footer.pdf in resources
+                resources_dir = resource_path('resources')
+                template_path = None
                 
-                if template_path.exists():
+                # Find first matching file
+                if resources_dir.exists():
+                    matches = list(resources_dir.glob('*Footer.pdf'))
+                    if matches:
+                        template_path = matches[0]
+                
+                if template_path and template_path.exists():
                     template = PdfReader(str(template_path)).pages[0]
                     template_xobj = pagexobj(template)
                     canvas.doForm(makerl(canvas, template_xobj))
