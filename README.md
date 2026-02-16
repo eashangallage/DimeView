@@ -66,8 +66,8 @@ If you are a developer or running on Linux, follow these steps.
 1.  **Install Python 3.12+**: Make sure to check **"Add Python to PATH"** during installation.
 2.  **Clone & Setup**:
     ```powershell
-    git clone https://github.com/eashangallage/MoneyMirror.git
-    cd MoneyMirror
+    git clone https://github.com/eashangallage/DimeView.git
+    cd DimeView
     python -m venv venv
     .\venv\Scripts\activate
     pip install -e .
@@ -85,8 +85,8 @@ If you are a developer or running on Linux, follow these steps.
     ```
 2.  **Clone & Launch**:
     ```bash
-    git clone https://github.com/eashangallage/MoneyMirror.git
-    cd MoneyMirror
+    git clone https://github.com/eashangallage/DimeView.git
+    cd DimeView
     python3 -m venv venv
     source venv/bin/activate
     pip install -e .
