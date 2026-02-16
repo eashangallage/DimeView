@@ -35,11 +35,12 @@ jobs:
       - name: Build application with PyInstaller
         shell: bash
         run: |
-          pyinstaller --name moneymirror \
-            --onedir \
-            --windowed \
-            --add-data "src/moneymirror/resources;resources" \
-            src/moneymirror/main.py
+          pyinstaller dimeview.spec
+
+      - name: Verify Dist Content
+        shell: bash
+        run: |
+          ls -R dist/dimeview
 
       - name: Install NSIS
         run: |
@@ -55,14 +56,14 @@ jobs:
       - name: Upload Installer Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: MoneyMirror-Windows-Installer
+          name: DimeView-Windows-Installer
           path: |
-            dist\MoneyMirror-Setup-*.exe
+            dist\DimeView-Setup-*.exe
 
       - name: Create Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v1
         with:
-          files: dist/MoneyMirror-Setup-*.exe
+          files: dist/DimeView-Setup-*.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
