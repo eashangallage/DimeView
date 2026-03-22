@@ -430,18 +430,17 @@ class DimeViewModel:
             fraction_percent = float(match.group(1))
         
         # 3. Calculate Total Credit for this Load No across ALL sheets
+        # Only use "Full Payment" credit entries for fraction calculation
         total_credit = 0.0
         credit_idx = self.HEADER_IDX['credit'] - 1
         
         for m_title, m_info in self._memory_cache.items():
             for r in m_info['rows']:
-                # Skip the fraction row itself to avoid circular math (though it should have 0 credit)
-                if (len(r) > transaction_idx and r[transaction_idx] == 'Fraction'):
-                    continue
-                
                 if (len(r) > ln_idx and str(r[ln_idx]) == str(load_no)):
-                    if len(r) > credit_idx:
-                        total_credit += _parse_amount(str(r[credit_idx]))
+                    # Only "Full Payment" entries count toward the fraction base
+                    if len(r) > transaction_idx and r[transaction_idx] == 'Full Payment':
+                        if len(r) > credit_idx:
+                            total_credit += _parse_amount(str(r[credit_idx]))
 
         # 4. Calculate New Debit Amount
         # new_debit = total_credit * (fraction_percent / 100.0)
@@ -834,12 +833,10 @@ class DimeViewModel:
                     
                     # Verify load no matches (should match if coming from index)
                     if len(row) > ln_idx and str(row[ln_idx]) == str(load_no):
-                        # Skip Fraction entries to avoid double counting or circular logic
-                        if len(row) > trans_idx and row[trans_idx] == 'Fraction':
-                            continue
-                            
-                        if len(row) > credit_idx:
-                            total_credit += _parse_amount(str(row[credit_idx]))
+                        # Only "Full Payment" credit entries count for fraction calculation
+                        if len(row) > trans_idx and row[trans_idx] == 'Full Payment':
+                            if len(row) > credit_idx:
+                                total_credit += _parse_amount(str(row[credit_idx]))
         except Exception:
             pass
         return total_credit
@@ -1203,16 +1200,54 @@ class DimeViewModel:
         rows = self.generate_detailed_report(from_date, to_date, load_no, transaction, driver, truck, from_state, to_state)
         credit_col = self.HEADER_IDX['credit'] - 1
         debit_col = self.HEADER_IDX['debit'] - 1
+        driver_col = self.HEADER_IDX['driver_id'] - 1
+        truck_col = self.HEADER_IDX['truck_id'] - 1
         total_credit = sum(_parse_amount(r[credit_col]) for r in rows)
         total_debit = sum(_parse_amount(r[debit_col]) for r in rows)
+        unique_drivers = sorted(filter(None, {r[driver_col] for r in rows if len(r) > driver_col}))
+        unique_trucks = sorted(filter(None, {r[truck_col] for r in rows if len(r) > truck_col}))
         return {
             'time_period': f"{from_date} to {to_date}",
             'total_credit': f"${total_credit:,.2f}",
             'total_debit': f"${total_debit:,.2f}",
-            'net': f"${total_credit - total_debit:,.2f}"
+            'net': f"${total_credit - total_debit:,.2f}",
+            'drivers': ', '.join(unique_drivers) if unique_drivers else '—',
+            'trucks': ', '.join(unique_trucks) if unique_trucks else '—',
         }
 
-    def export_summary_pdf(self, summary, path, rows=None):
+    @staticmethod
+    def _xml_escape(text: str) -> str:
+        """Escape characters that would break ReportLab's XML paragraph parser."""
+        return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+    def _render_text_to_story(self, story, text_content: str, style):
+        """Render each non-empty line of text_content as a Paragraph in story."""
+        for line in text_content.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if ': ' in stripped:
+                label, _, value = stripped.partition(': ')
+                safe_label = self._xml_escape(label.strip())
+                safe_value = self._xml_escape(value.strip())
+                story.append(Paragraph(f"<b>{safe_label}:</b> {safe_value}", style))
+            else:
+                story.append(Paragraph(self._xml_escape(stripped), style))
+
+    @staticmethod
+    def _summary_dict_to_text(summary: dict) -> str:
+        """Fallback: convert known summary dict keys to a text block."""
+        lines = [
+            f"Time Period: {summary.get('time_period', '')}",
+            f"Total Credit: {summary.get('total_credit', '')}",
+            f"Total Debit: {summary.get('total_debit', '')}",
+            f"Net: {summary.get('net', '')}",
+            f"Driver(s): {summary.get('drivers', '-')}",
+            f"Truck(s): {summary.get('trucks', '-')}",
+        ]
+        return '\n'.join(lines)
+
+    def export_summary_pdf(self, summary, path, rows=None, summary_text_content=None):
 
         def on_first_page(canvas, doc):
             canvas.saveState()
@@ -1299,10 +1334,12 @@ class DimeViewModel:
             fontSize=11,
             spaceAfter=0.1*inch
         )
-        story.append(Paragraph(f"<b>Time Period:</b> {summary['time_period']}", summary_style))
-        story.append(Paragraph(f"<b>Total Credit:</b> {summary['total_credit']}", summary_style))
-        story.append(Paragraph(f"<b>Total Debit:</b> {summary['total_debit']}", summary_style))
-        story.append(Paragraph(f"<b>Net:</b> {summary['net']}", summary_style))
+
+        self._render_text_to_story(
+            story,
+            summary_text_content or self._summary_dict_to_text(summary),
+            summary_style
+        )
         story.append(Spacer(1, 0.3*inch))
         
         # Add detailed table if rows are provided
@@ -1436,4 +1473,256 @@ class DimeViewModel:
         # Build PDF
         doc.build(story, onFirstPage=on_first_page, onLaterPages=on_later_pages)
 
-        
+    def generate_driver_report_data(self, rows):
+        """
+        Transform raw detail rows into per-load driver report rows.
+
+        Each returned dict has:
+            date, load_no, trip, line_haul, other_credit,
+            fraction_amount, fraction_pct_str, other_debit, total
+
+        Also returns the dominant fraction_pct_str for use as the
+        column header (e.g. "3.5" → column "Fraction 3.5%").
+        """
+        from collections import defaultdict
+
+        ln_idx        = self.HEADER_IDX['load_no']     - 1
+        date_idx      = self.HEADER_IDX['date']        - 1
+        from_state_idx= self.HEADER_IDX['from_state']  - 1
+        to_state_idx  = self.HEADER_IDX['to_state']    - 1
+        transaction_idx= self.HEADER_IDX['transaction'] - 1
+        credit_idx    = self.HEADER_IDX['credit']      - 1
+        debit_idx     = self.HEADER_IDX['debit']       - 1
+        details_idx   = self.HEADER_IDX['details']     - 1
+
+        groups = defaultdict(list)
+        for row in rows:
+            ln = row[ln_idx] if len(row) > ln_idx else ''
+            groups[ln].append(row)
+
+        report_rows = []
+        fraction_pct_counts = defaultdict(int)
+
+        for load_no, group_rows in groups.items():
+            # Use the Full Payment row for date/trip when available
+            fp_rows = [
+                r for r in group_rows
+                if len(r) > transaction_idx and r[transaction_idx] == 'Full Payment'
+            ]
+            rep_row = fp_rows[0] if fp_rows else group_rows[0]
+
+            date_val   = rep_row[date_idx]       if len(rep_row) > date_idx       else ''
+            from_state = rep_row[from_state_idx] if len(rep_row) > from_state_idx else ''
+            to_state   = rep_row[to_state_idx]   if len(rep_row) > to_state_idx   else ''
+            from_abbr  = from_state.split(':')[0].strip() if from_state else ''
+            to_abbr    = to_state.split(':')[0].strip()   if to_state   else ''
+            trip       = f"{from_abbr}-{to_abbr}" if (from_abbr or to_abbr) else ''
+
+            # Line Haul: credit where Transaction == "Full Payment"
+            line_haul = sum(
+                _parse_amount(str(r[credit_idx]))
+                for r in group_rows
+                if len(r) > transaction_idx and r[transaction_idx] == 'Full Payment'
+                and len(r) > credit_idx
+            )
+
+            # Other Credit: sum of credit where Transaction != "Full Payment"
+            other_credit = sum(
+                _parse_amount(str(r[credit_idx]))
+                for r in group_rows
+                if len(r) > transaction_idx and r[transaction_idx] != 'Full Payment'
+                and len(r) > credit_idx
+            )
+
+            # Fraction row
+            fraction_rows = [
+                r for r in group_rows
+                if len(r) > transaction_idx and r[transaction_idx] == 'Fraction'
+            ]
+            fraction_amount  = 0.0
+            fraction_pct_str = '3.5'
+            if fraction_rows:
+                frac_row = fraction_rows[0]
+                fraction_amount = (
+                    _parse_amount(str(frac_row[debit_idx]))
+                    if len(frac_row) > debit_idx else 0.0
+                )
+                details_text = frac_row[details_idx] if len(frac_row) > details_idx else ''
+                m = re.search(r'Fraction\s+(\d+(?:\.\d+)?)%', details_text)
+                if m:
+                    fraction_pct_str = m.group(1)
+
+            fraction_pct_counts[fraction_pct_str] += 1
+
+            # Other Debit: sum of all debit EXCLUDING the Fraction row
+            other_debit = sum(
+                _parse_amount(str(r[debit_idx]))
+                for r in group_rows
+                if len(r) > transaction_idx and r[transaction_idx] != 'Fraction'
+                and len(r) > debit_idx
+            )
+
+            total = line_haul + other_credit - fraction_amount - other_debit
+
+            report_rows.append({
+                'date':            date_val,
+                'load_no':         load_no,
+                'trip':            trip,
+                'line_haul':       line_haul,
+                'other_credit':    other_credit,
+                'fraction_amount': fraction_amount,
+                'fraction_pct_str':fraction_pct_str,
+                'other_debit':     other_debit,
+                'total':           total,
+            })
+
+        # Sort by load_no numerically
+        def sort_key(r):
+            try:
+                return (int(r['load_no']), '')
+            except (ValueError, TypeError):
+                return (float('inf'), str(r['load_no']))
+        report_rows.sort(key=sort_key)
+
+        # Determine dominant fraction percentage for the column header
+        global_pct_str = max(fraction_pct_counts, key=lambda k: fraction_pct_counts[k]) if fraction_pct_counts else '3.5'
+
+        return report_rows, global_pct_str
+
+    def export_driver_report_pdf(self, rows, path, summary_text_content=None):
+        """Generate the Driver Report PDF from raw detail rows."""
+
+        def on_first_page(canvas, doc):
+            canvas.saveState()
+            try:
+                resources_dir = resource_path('resources')
+                if resources_dir.exists():
+                    matches = list(resources_dir.glob('*Letterhead.pdf'))
+                    if matches:
+                        template = PdfReader(str(matches[0])).pages[0]
+                        canvas.doForm(makerl(canvas, pagexobj(template)))
+            except Exception as e:
+                print(f"Error loading letterhead: {e}")
+            canvas.restoreState()
+
+        def on_later_pages(canvas, doc):
+            canvas.saveState()
+            try:
+                resources_dir = resource_path('resources')
+                if resources_dir.exists():
+                    matches = list(resources_dir.glob('*Footer.pdf'))
+                    if matches:
+                        template = PdfReader(str(matches[0])).pages[0]
+                        canvas.doForm(makerl(canvas, pagexobj(template)))
+            except Exception as e:
+                print(f"Error loading footer: {e}")
+            canvas.restoreState()
+
+        report_rows, global_pct_str = self.generate_driver_report_data(rows)
+
+        # Build summary stats from the raw rows
+        credit_col  = self.HEADER_IDX['credit']    - 1
+        debit_col   = self.HEADER_IDX['debit']     - 1
+        driver_col  = self.HEADER_IDX['driver_id'] - 1
+        truck_col   = self.HEADER_IDX['truck_id']  - 1
+        total_credit = sum(_parse_amount(str(r[credit_col])) for r in rows if len(r) > credit_col)
+        total_debit  = sum(_parse_amount(str(r[debit_col]))  for r in rows if len(r) > debit_col)
+        unique_drivers = sorted(filter(None, {r[driver_col] for r in rows if len(r) > driver_col}))
+        unique_trucks  = sorted(filter(None, {r[truck_col]  for r in rows if len(r) > truck_col}))
+
+        doc = SimpleDocTemplate(
+            path, pagesize=letter,
+            topMargin=1.0*inch, bottomMargin=1.5*inch,
+            leftMargin=0.5*inch, rightMargin=0.5*inch
+        )
+        story = []
+        styles = getSampleStyleSheet()
+
+        story.append(Spacer(1, 1.5*inch))
+
+        date_style = ParagraphStyle(
+            'DateStyle', parent=styles['Normal'],
+            fontSize=10, textColor=colors.gray, alignment=2
+        )
+        story.append(Paragraph(f"Report Generated: {datetime.now().strftime('%B %d, %Y')}", date_style))
+        story.append(Spacer(1, 0.2*inch))
+
+        title_style = ParagraphStyle(
+            'CustomTitle', parent=styles['Heading1'],
+            fontSize=18, textColor=colors.HexColor('#1a73e8'),
+            spaceAfter=0.2*inch, alignment=1
+        )
+        story.append(Paragraph("Driver Report", title_style))
+        story.append(Spacer(1, 0.2*inch))
+
+        summary_style = ParagraphStyle(
+            'Summary', parent=styles['Normal'],
+            fontSize=11, spaceAfter=0.1*inch
+        )
+
+        # Render from the live UI text if provided; otherwise use the computed stats.
+        if summary_text_content:
+            self._render_text_to_story(story, summary_text_content, summary_style)
+        else:
+            computed_text = '\n'.join([
+                f"Total Credit: ${total_credit:,.2f}",
+                f"Total Debit: ${total_debit:,.2f}",
+                f"Net: ${total_credit - total_debit:,.2f}",
+                f"Driver(s): {', '.join(unique_drivers) if unique_drivers else '-'}",
+                f"Truck(s): {', '.join(unique_trucks) if unique_trucks else '-'}",
+            ])
+            self._render_text_to_story(story, computed_text, summary_style)
+        story.append(Spacer(1, 0.3*inch))
+
+        fraction_col_header = f"Fraction {global_pct_str}%"
+
+        pdf_headers = [
+            'Date', 'Load No.', 'Trip',
+            'Line Haul', 'Other Credit',
+            fraction_col_header,
+            'Other Debit', 'Total'
+        ]
+
+        def fmt(v):
+            return f"${v:,.2f}" if v != 0.0 else "$0.00"
+
+        table_data = [[f" {h} " for h in pdf_headers]]
+        for r in report_rows:
+            table_data.append([
+                f" {r['date']} ",
+                f" {r['load_no']} ",
+                f" {r['trip']} ",
+                f" {fmt(r['line_haul'])} ",
+                f" {fmt(r['other_credit'])} ",
+                f" {fmt(r['fraction_amount'])} ",
+                f" {fmt(r['other_debit'])} ",
+                f" {fmt(r['total'])} ",
+            ])
+
+        # Column widths (inches): Date, Load, Trip, LineHaul, OtherCr, Frac, OtherDeb, Total
+        col_widths = [1.0*inch, 0.65*inch, 0.65*inch, 0.95*inch, 0.95*inch, 0.95*inch, 0.90*inch, 0.95*inch]
+
+        table = Table(table_data, colWidths=col_widths, repeatRows=1)
+        table.setStyle(TableStyle([
+            ('BACKGROUND',    (0, 0), (-1, 0),  colors.HexColor('#4CAF50')),
+            ('TEXTCOLOR',     (0, 0), (-1, 0),  colors.whitesmoke),
+            ('ALIGN',         (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME',      (0, 0), (-1, 0),  'Helvetica-Bold'),
+            ('FONTSIZE',      (0, 0), (-1, 0),  8),
+            ('BOTTOMPADDING', (0, 0), (-1, 0),  6),
+            ('TOPPADDING',    (0, 0), (-1, 0),  6),
+            ('FONTNAME',      (0, 1), (-1, -1), 'Helvetica'),
+            ('FONTSIZE',      (0, 1), (-1, -1), 8),
+            ('ROWBACKGROUNDS',(0, 1), (-1, -1), [colors.white, colors.HexColor('#f0f0f0')]),
+            ('GRID',          (0, 0), (-1, -1), 0.5, colors.grey),
+            ('LEFTPADDING',   (0, 0), (-1, -1), 2),
+            ('RIGHTPADDING',  (0, 0), (-1, -1), 2),
+            ('TOPPADDING',    (0, 1), (-1, -1), 3),
+            ('BOTTOMPADDING', (0, 1), (-1, -1), 3),
+            ('VALIGN',        (0, 0), (-1, -1), 'MIDDLE'),
+        ]))
+
+        story.append(table)
+        doc.build(story, onFirstPage=on_first_page, onLaterPages=on_later_pages)
+
+

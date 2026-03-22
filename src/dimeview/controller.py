@@ -787,6 +787,7 @@ class DimeViewController:
         )
         reports_tab.populate_summary(summary)
         reports_tab.enable_pdf_download(self.model.export_summary_pdf, summary, rows)
+        reports_tab.enable_driver_report_download(self.model.export_driver_report_pdf, rows)
 
     def handle_generate_detailed_report(self):
         reports_tab = self.main_window.reports_tab

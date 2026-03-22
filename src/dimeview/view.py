@@ -505,8 +505,11 @@ class ReportsTab(QWidget):
         
         self.csv_download_button = QPushButton("⬇️ Download Detailed Report as CSV")
         self.pdf_download_button = QPushButton("⬇️ Download Summary Report as PDF")
+        self.driver_report_button = QPushButton("⬇️ Download Driver Report as PDF")
+        self.driver_report_button.setEnabled(False)
         download_layout.addWidget(self.csv_download_button)
         download_layout.addWidget(self.pdf_download_button)
+        download_layout.addWidget(self.driver_report_button)
         layout.addLayout(download_layout)
         
         # === RESET BUTTON (at bottom) ===
@@ -722,22 +725,20 @@ class ReportsTab(QWidget):
         except Exception:
             pass
         def save_pdf():
-            # Default to Downloads/DimeView
             default_dir = Path.home() / "Downloads" / "DimeView"
             try:
                 default_dir.mkdir(parents=True, exist_ok=True)
             except Exception:
-                # Fallback to home if permission denied or other error
                 default_dir = Path.home()
-
             path, _ = QFileDialog.getSaveFileName(self, "Save PDF", str(default_dir), "PDF Files (*.pdf)")
             if path:
                 try:
-                    # Pass both summary and rows if available
+                    # Read the current (possibly edited) text box content at download time
+                    live_text = self.summary_text.toPlainText()
                     if rows is not None:
-                        export_func(summary, path, rows)
+                        export_func(summary, path, rows, summary_text_content=live_text)
                     else:
-                        export_func(summary, path)
+                        export_func(summary, path, summary_text_content=live_text)
                     QMessageBox.information(self, "Success", f"Report saved to:\n{path}")
                 except Exception as e:
                     import traceback
@@ -745,12 +746,40 @@ class ReportsTab(QWidget):
                     QMessageBox.critical(self, "Error", f"Failed to save PDF:\n{str(e)}")
         self.pdf_download_button.clicked.connect(save_pdf)
 
+    def enable_driver_report_download(self, export_func, rows):
+        self.driver_report_button.setEnabled(True)
+        try:
+            self.driver_report_button.clicked.disconnect()
+        except Exception:
+            pass
+        def save_driver_pdf():
+            default_dir = Path.home() / "Downloads" / "DimeView"
+            try:
+                default_dir.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                default_dir = Path.home()
+            path, _ = QFileDialog.getSaveFileName(
+                self, "Save Driver Report PDF", str(default_dir), "PDF Files (*.pdf)"
+            )
+            if path:
+                try:
+                    live_text = self.summary_text.toPlainText()
+                    export_func(rows, path, summary_text_content=live_text)
+                    QMessageBox.information(self, "Success", f"Driver Report saved to:\n{path}")
+                except Exception as e:
+                    import traceback
+                    traceback.print_exc()
+                    QMessageBox.critical(self, "Error", f"Failed to save Driver Report:\n{str(e)}")
+        self.driver_report_button.clicked.connect(save_driver_pdf)
+
     def populate_summary(self, summary):
         text = (
             f"Time Period: {summary['time_period']}\n"
             f"Total Credit: {summary['total_credit']}\n"
             f"Total Debit: {summary['total_debit']}\n"
             f"Net: {summary['net']}\n"
+            f"Driver(s): {summary.get('drivers', '—')}\n"
+            f"Truck(s): {summary.get('trucks', '—')}\n"
         )
         self.summary_text.setPlainText(text)
 
