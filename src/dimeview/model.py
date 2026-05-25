@@ -1435,51 +1435,59 @@ class DimeViewModel:
         
         return 3.5  # Default
 
-    def detect_field_changes(self, latest_entry, driver_id, truck_id, from_state, to_state, delivery_status, payment_status, fraction_percent=None):
+    def detect_field_changes(self, latest_entry, driver_id, truck_id, from_state, to_state,
+                              delivery_status, payment_status, fraction_percent=None,
+                              from_city=None, to_city=None):
         """
         Detect field changes between the latest entry and new values.
         Returns a list of change descriptions.
+
+        Column positions derive from HEADER_IDX so this stays correct across
+        schema changes (e.g. the From City / To City migration).
         """
         changes = []
-        if not latest_entry or len(latest_entry) < 9:
+        if not latest_entry:
             return changes
-        
-        # Extract old values from entry
-        # Row format: [date, load_no, driver_id, truck_id, from_state, to_state,
-        #              transaction, delivery_status, payment_status, credit, debit, fraction, details]
-        old_driver = latest_entry[2] if len(latest_entry) > 2 else ''
-        old_truck = latest_entry[3] if len(latest_entry) > 3 else ''
-        old_from = latest_entry[4] if len(latest_entry) > 4 else ''
-        old_to = latest_entry[5] if len(latest_entry) > 5 else ''
-        old_delivery = latest_entry[7] if len(latest_entry) > 7 else ''
-        old_payment = latest_entry[8] if len(latest_entry) > 8 else ''
-        old_fraction = latest_entry[11] if len(latest_entry) > 11 else ''
-        
-        # Detect changes
+
+        def col(key):
+            idx = self.HEADER_IDX[key] - 1
+            return latest_entry[idx] if idx < len(latest_entry) else ''
+
+        old_driver = col('driver_id')
+        old_truck = col('truck_id')
+        old_from_state = col('from_state')
+        old_from_city = col('from_city')
+        old_to_state = col('to_state')
+        old_to_city = col('to_city')
+        old_delivery = col('delivery_status')
+        old_payment = col('payment_status')
+        old_fraction = col('details')  # fraction percentage lives in the details cell
+
         if driver_id and driver_id != old_driver:
             changes.append(f"Driver ID: {old_driver} → {driver_id}")
         if truck_id and truck_id != old_truck:
             changes.append(f"Truck ID: {old_truck} → {truck_id}")
-        if from_state and from_state != old_from:
-            changes.append(f"From State: {old_from} → {from_state}")
-        if to_state and to_state != old_to:
-            changes.append(f"To State: {old_to} → {to_state}")
+        if from_state and from_state != old_from_state:
+            changes.append(f"From State: {old_from_state} → {from_state}")
+        if from_city and from_city != old_from_city:
+            changes.append(f"From City: {old_from_city} → {from_city}")
+        if to_state and to_state != old_to_state:
+            changes.append(f"To State: {old_to_state} → {to_state}")
+        if to_city and to_city != old_to_city:
+            changes.append(f"To City: {old_to_city} → {to_city}")
         if delivery_status and delivery_status != old_delivery:
             changes.append(f"Delivery Status: {old_delivery} → {delivery_status}")
         if payment_status and payment_status != old_payment:
             changes.append(f"Payment Status: {old_payment} → {payment_status}")
-        
+
         if fraction_percent is not None:
-            # Extract existing fraction percentage from details
-            old_frac_float = 3.5 # Default
+            old_frac_float = 3.5
             match = re.search(r'Fraction\s+(\d+(?:\.\d+)?)%', old_fraction)
             if match:
                 old_frac_float = float(match.group(1))
-            
-            # Compare with epsilon
             if abs(fraction_percent - old_frac_float) > 0.001:
                 changes.append(f"Fraction: {old_frac_float}% → {fraction_percent}%")
-        
+
         return changes
 
     def export_detailed_csv(self, rows, path):

@@ -232,17 +232,32 @@ class DataEntryTab(QWidget):
         configure_combobox_height(self.truck_id_combo, 10)
         layout.addRow("Truck ID:", self.truck_id_combo)
     
-        # From State
+        # From State + From City (city list is repopulated by the controller
+        # whenever the state changes; both are editable with QCompleter).
         self.from_state_combo = QComboBox()
         self.from_state_combo.setEditable(True)
         configure_combobox_height(self.from_state_combo, 10)
-        layout.addRow("From State:", self.from_state_combo)
+        self.from_city_combo = QComboBox()
+        self.from_city_combo.setEditable(True)
+        self.from_city_combo.lineEdit().setPlaceholderText("City")
+        configure_combobox_height(self.from_city_combo, 10)
+        from_row = QHBoxLayout()
+        from_row.addWidget(self.from_state_combo)
+        from_row.addWidget(self.from_city_combo)
+        layout.addRow("From State:", from_row)
 
-        # To State
+        # To State + To City
         self.to_state_combo = QComboBox()
         self.to_state_combo.setEditable(True)
         configure_combobox_height(self.to_state_combo, 10)
-        layout.addRow("To State:", self.to_state_combo)
+        self.to_city_combo = QComboBox()
+        self.to_city_combo.setEditable(True)
+        self.to_city_combo.lineEdit().setPlaceholderText("City")
+        configure_combobox_height(self.to_city_combo, 10)
+        to_row = QHBoxLayout()
+        to_row.addWidget(self.to_state_combo)
+        to_row.addWidget(self.to_city_combo)
+        layout.addRow("To State:", to_row)
 
         # Transaction
         self.transaction_combo = QComboBox()
@@ -300,7 +315,11 @@ class DataEntryTab(QWidget):
         self.driver_id_combo.setCurrentIndex(-1)
         self.truck_id_combo.setCurrentIndex(-1)
         self.from_state_combo.setCurrentIndex(-1)
+        self.from_city_combo.clear()
+        self.from_city_combo.clearEditText()
         self.to_state_combo.setCurrentIndex(-1)
+        self.to_city_combo.clear()
+        self.to_city_combo.clearEditText()
         self.transaction_combo.setCurrentIndex(-1)
         self.delivery_combo.setCurrentIndex(-1)
         self.payment_combo.setCurrentIndex(-1)
@@ -322,20 +341,32 @@ class DataEntryTab(QWidget):
     def populate_from_entry(self, entry_row):
         """
         Populate form fields from a data row.
-        Row format: [date, load_no, driver_id, truck_id, from_state, to_state,
-                     transaction, delivery_status, payment_status, credit, debit, details]
+        Row format (post-cities migration):
+            [date, load_no, driver_id, truck_id,
+             from_state, from_city, to_state, to_city,
+             transaction, delivery_status, payment_status,
+             credit, debit, details]
+        Historical rows from un-migrated sheets are shorter and lack city
+        slots; defensive index checks keep this safe.
         """
-        if not entry_row or len(entry_row) < 9:
+        if not entry_row or len(entry_row) < 11:
             return
 
-        # [0]=Date, [1]=Load, [2]=Driver, [3]=Truck, [4]=From, [5]=To,
-        # [6]=Transaction, [7]=Delivery, [8]=Payment
-        self.driver_id_combo.setCurrentText(entry_row[2])
-        self.truck_id_combo.setCurrentText(entry_row[3])
-        self.from_state_combo.setCurrentText(entry_row[4])
-        self.to_state_combo.setCurrentText(entry_row[5])
-        self.delivery_combo.setCurrentText(entry_row[7])
-        self.payment_combo.setCurrentText(entry_row[8])
+        def cell(idx):
+            return entry_row[idx] if idx < len(entry_row) else ''
+
+        # [0]=Date, [1]=Load, [2]=Driver, [3]=Truck,
+        # [4]=From State, [5]=From City, [6]=To State, [7]=To City,
+        # [8]=Transaction, [9]=Delivery, [10]=Payment, [11]=Credit, [12]=Debit, [13]=Details
+        self.driver_id_combo.setCurrentText(cell(2))
+        self.truck_id_combo.setCurrentText(cell(3))
+        self.from_state_combo.setCurrentText(cell(4))
+        # State signal will repopulate the city combo; setCurrentText after.
+        self.from_city_combo.setCurrentText(cell(5))
+        self.to_state_combo.setCurrentText(cell(6))
+        self.to_city_combo.setCurrentText(cell(7))
+        self.delivery_combo.setCurrentText(cell(9))
+        self.payment_combo.setCurrentText(cell(10))
 
     def setup_state_auto_format(self, model):
         """

@@ -216,35 +216,73 @@ class DimeViewController:
         self.main_window.action_migrate_schema.triggered.connect(self.handle_migrate_schema)
         self.setup_data_entry_tab()
         self.setup_reports_tab()
-        # If the workbook still has the old column layout, nudge the user.
-        if getattr(self.model, '_needs_migration', False):
-            QMessageBox.warning(
-                self.main_window,
-                "Sheet Migration Needed",
-                "This workbook is using the old column layout (no From City / To City).\n\n"
-                "Run Tools → Migrate Sheet Structure… before adding new entries, "
-                "otherwise saves will be refused."
-            )
+        # The migration warning (if needed) is shown from setup_reports_tab's
+        # finishing path, after main_window.show() — otherwise it floats behind
+        # the not-yet-visible main window.
         # DO NOT show the main_window here. It will be shown when all data is loaded.
+
+    def _refresh_city_combo(self, city_combo, state_text):
+        """Repopulate `city_combo`'s items and QCompleter from the cities for
+        the given state, preserving any text the user has already typed.
+        """
+        cities = self.model.get_cities_for_state(state_text)
+        # Preserve user-typed text across the rebuild.
+        current = city_combo.currentText()
+        city_combo.blockSignals(True)
+        city_combo.clear()
+        city_combo.addItems(cities)
+        city_combo.setEditText(current)
+        city_combo.blockSignals(False)
+
+        completer = QCompleter(cities, city_combo)
+        completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        city_combo.setCompleter(completer)
+
+    def _show_message(self, icon, title, text):
+        """Show a QMessageBox that reliably surfaces on top.
+
+        Static QMessageBox helpers don't always activate on Linux when the
+        parent window isn't visible yet. Building the dialog manually and
+        calling raise_() / activateWindow() before exec() forces it to the
+        foreground.
+        """
+        parent = getattr(self, 'main_window', None)
+        box = QMessageBox(parent)
+        box.setIcon(icon)
+        box.setWindowTitle(title)
+        box.setText(text)
+        box.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        box.show()
+        box.raise_()
+        box.activateWindow()
+        return box.exec()
 
     def handle_migrate_schema(self):
         """Confirm with the user, then run migrate_sheets_for_cities in a worker."""
-        reply = QMessageBox.question(
-            self.main_window,
-            "Migrate Sheet Structure",
+        box = QMessageBox(self.main_window)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("Migrate Sheet Structure")
+        box.setText(
             "This will add 'From City' and 'To City' columns to the Template and every "
             "monthly sheet in the active workbook, and update the summary formulas.\n\n"
             "Historical row values are preserved (new columns are blank for old rows). "
             "The action is idempotent — sheets already migrated are skipped.\n\n"
-            "Proceed?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No
+            "Proceed?"
         )
-        if reply != QMessageBox.StandardButton.Yes:
+        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        box.setDefaultButton(QMessageBox.StandardButton.No)
+        box.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        box.show()
+        box.raise_()
+        box.activateWindow()
+        if box.exec() != QMessageBox.StandardButton.Yes:
             return
 
         self._migration_loader = LoadingDialog("Migrating sheets… this may take a moment.")
         self._migration_loader.show()
+        self._migration_loader.raise_()
+        self._migration_loader.activateWindow()
 
         self._migration_thread = QThread()
         self._migration_worker = SchemaMigrator(self.model)
@@ -259,8 +297,9 @@ class DimeViewController:
     def _on_migration_finished(self, result, error):
         self._migration_loader.close()
         if error is not None:
-            QMessageBox.critical(
-                self.main_window, "Migration Failed",
+            self._show_message(
+                QMessageBox.Icon.Critical,
+                "Migration Failed",
                 f"The migration could not complete:\n\n{error}\n\n"
                 "Your workbook may be in a partially-migrated state. "
                 "Re-running the action is safe — it skips sheets that are already done."
@@ -277,7 +316,7 @@ class DimeViewController:
             parts.append(f"Failed: {len(failed)}")
             details = "\n".join(f"  • {t}: {err}" for t, err in failed)
             parts.append(f"\nFailures:\n{details}")
-        QMessageBox.information(self.main_window, "Migration Complete", "\n".join(parts))
+        self._show_message(QMessageBox.Icon.Information, "Migration Complete", "\n".join(parts))
 
 
     def setup_data_entry_tab(self):
@@ -298,6 +337,18 @@ class DimeViewController:
         completer_to.setFilterMode(Qt.MatchFlag.MatchContains)
         completer_to.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         data_tab.to_state_combo.setCompleter(completer_to)
+
+        # City dropdowns depend on the matching state. Repopulate on every
+        # state change so the user only sees cities for the selected state.
+        data_tab.from_state_combo.currentTextChanged.connect(
+            lambda txt: self._refresh_city_combo(data_tab.from_city_combo, txt)
+        )
+        data_tab.to_state_combo.currentTextChanged.connect(
+            lambda txt: self._refresh_city_combo(data_tab.to_city_combo, txt)
+        )
+        # Initial population in case a state is already selected.
+        self._refresh_city_combo(data_tab.from_city_combo, data_tab.from_state_combo.currentText())
+        self._refresh_city_combo(data_tab.to_city_combo, data_tab.to_state_combo.currentText())
 
         # Load Nos
         try:
@@ -499,6 +550,11 @@ class DimeViewController:
         from_state = from_text.split(':')[0].strip() if from_text else ""
         to_state = to_text.split(':')[0].strip() if to_text else ""
 
+        # Cities are free-text within the matching state's list — no validation
+        # beyond stripping whitespace. Empty is allowed.
+        from_city = data_tab.from_city_combo.currentText().strip()
+        to_city = data_tab.to_city_combo.currentText().strip()
+
         # Pre-submission status & field change check (sync with model)
         try:
             if load_no and load_no != "Other":
@@ -508,7 +564,8 @@ class DimeViewController:
                     # Get changes from model (including fraction changes)
                     changes = self.model.detect_field_changes(
                         latest_prev, driver_id, truck_id, from_state, to_state,
-                        delivery_status, payment_status, fraction_percent
+                        delivery_status, payment_status, fraction_percent,
+                        from_city=from_city, to_city=to_city
                     )
                     if changes:
                         msg = (
@@ -544,7 +601,8 @@ class DimeViewController:
            date_val, load_no, driver_id, truck_id,
            from_state, to_state,
            transaction, delivery_status, payment_status,
-           credit_amt, debit_amt, details, fraction_percent
+           credit_amt, debit_amt, details, fraction_percent,
+           from_city=from_city, to_city=to_city
         )
         self.submit_worker.moveToThread(self.submit_thread)
         self.submit_thread.started.connect(self.submit_worker.run)
@@ -669,6 +727,19 @@ class DimeViewController:
         # FINALLY, close the single loading dialog and show the ready main window.
         self.loading_dialog.close()
         self.main_window.show()
+        self.main_window.raise_()
+        self.main_window.activateWindow()
+
+        # Now (after main_window is visible) nudge the user if the workbook
+        # still uses the pre-cities column layout.
+        if getattr(self.model, '_needs_migration', False):
+            self._show_message(
+                QMessageBox.Icon.Warning,
+                "Sheet Migration Needed",
+                "This workbook is using the old column layout (no From City / To City).\n\n"
+                "Run Tools → Migrate Sheet Structure… before adding new entries, "
+                "otherwise saves will be refused."
+            )
 
     def handle_delete_entry(self):
         reports_tab = self.main_window.reports_tab
