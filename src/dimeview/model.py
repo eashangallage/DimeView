@@ -65,6 +65,18 @@ class GoogleQuotaExceededError(Exception):
     pass
 
 
+class SchemaMigrationRequiredError(Exception):
+    """Raised when an action requires the workbook to be migrated first.
+
+    Step 2 introduced the From City / To City columns. Workbooks created
+    before that change are missing those columns; writing 14-column rows
+    into a 12-column sheet would scramble the data. The migration menu
+    action rewrites every monthly sheet (and the Template) to the new
+    layout. Until that runs, append_entry refuses to write.
+    """
+    pass
+
+
 class DimeViewModel:
     """Handles data logic: Google Sheets API and offline cache."""
 
@@ -76,22 +88,50 @@ class DimeViewModel:
 
     CREDS_PATH = resource_path('config/DimeViewCreds.json')
     CACHE_PATH = resource_path('cache/offline_cache.json')
+    CITIES_PATH = Path(__file__).parent / 'resources' / 'cities.json'
 
-    # Column indexes based on updated sheet layout (1-based)
+    # Column indexes based on updated sheet layout (1-based).
+    # This is the single source of truth for monthly-sheet column positions;
+    # template creation, row writes, range refs, and summary formulas all
+    # derive from it.
     HEADER_IDX = {
         'date': 1,
         'load_no': 2,
         'driver_id': 3,
         'truck_id': 4,
         'from_state': 5,
-        'to_state': 6,
-        'transaction': 7,
-        'delivery_status': 8,
-        'payment_status': 9,
-        'credit': 10,
-        'debit': 11,
-        'details': 12
+        'from_city': 6,
+        'to_state': 7,
+        'to_city': 8,
+        'transaction': 9,
+        'delivery_status': 10,
+        'payment_status': 11,
+        'credit': 12,
+        'debit': 13,
+        'details': 14
     }
+
+    # Display headers for each HEADER_IDX key (kept in lockstep).
+    HEADER_NAMES = {
+        'date': 'Date',
+        'load_no': 'Load No.',
+        'driver_id': 'Driver ID',
+        'truck_id': 'Truck ID',
+        'from_state': 'From State',
+        'from_city': 'From City',
+        'to_state': 'To State',
+        'to_city': 'To City',
+        'transaction': 'Transaction',
+        'delivery_status': 'Delivery Status',
+        'payment_status': 'Payment Status',
+        'credit': 'Credit',
+        'debit': 'Debit',
+        'details': 'More Details',
+    }
+
+    # Summary table sits one blank column past the data table.
+    SUMMARY_LABELS = ['Total Income', 'Total Expense', 'Net']
+    SUMMARY_GAP_COLS = 1
 
     TRANSACTION_TYPES = [
         'Fuel', 'Dispatch', 'Miscellaneous Income', 'Cash Advance',
@@ -116,6 +156,42 @@ class DimeViewModel:
     DELIVERY_STATUS_OPTIONS = ['Upcoming', 'In Progress', 'Completed']
     PAYMENT_STATUS_OPTIONS = ['Incomplete', 'Complete']
 
+    @staticmethod
+    def _col_letter(idx_1based):
+        """Convert 1-based column index to spreadsheet letter (1=A, 26=Z, 27=AA)."""
+        result = ''
+        n = idx_1based
+        while n > 0:
+            n -= 1
+            result = chr(ord('A') + n % 26) + result
+            n //= 26
+        return result
+
+    @classmethod
+    def _num_data_cols(cls):
+        return max(cls.HEADER_IDX.values())
+
+    @classmethod
+    def _last_data_col_letter(cls):
+        return cls._col_letter(cls._num_data_cols())
+
+    @classmethod
+    def _headers_in_order(cls):
+        """Display header strings in column order."""
+        sorted_keys = sorted(cls.HEADER_IDX, key=lambda k: cls.HEADER_IDX[k])
+        return [cls.HEADER_NAMES[k] for k in sorted_keys]
+
+    @classmethod
+    def _build_row(cls, data):
+        """Convert a dict keyed by HEADER_IDX keys into a positional row list."""
+        sorted_keys = sorted(cls.HEADER_IDX, key=lambda k: cls.HEADER_IDX[k])
+        return [data.get(k, '') for k in sorted_keys]
+
+    @classmethod
+    def _summary_start_col_1based(cls):
+        """1-based column index of the first summary cell (Total Income)."""
+        return cls._num_data_cols() + cls.SUMMARY_GAP_COLS + 1
+
     def __init__(self):
         self.CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
         creds = self._load_credentials()
@@ -127,6 +203,8 @@ class DimeViewModel:
         # In-memory, ephemeral cache (cleared on app close)
         self._memory_cache = {}   # { sheet_title: { 'rows': [...], 'start_row': 3 } }
         self._index = {}          # { load_no: [ (sheet_title, row_num), ... ] }
+        # Set by _check_migration_status; if True, append_entry refuses to write.
+        self._needs_migration = False
 
     def _load_credentials(self):
         if not self.CREDS_PATH.exists():
@@ -191,10 +269,10 @@ class DimeViewModel:
             if not sheet_pattern.match(title):
                 continue
                 
-            resp = self._execute_with_retry(lambda: 
+            resp = self._execute_with_retry(lambda:
                 self.sheets_service.spreadsheets().values().get(
                     spreadsheetId=spreadsheet_id,
-                    range=f"'{title}'!A3:L"
+                    range=f"'{title}'!A3:{self._last_data_col_letter()}"
                 ).execute()
             )
             rows = resp.get('values', [])
@@ -206,6 +284,42 @@ class DimeViewModel:
                     if ln:
                         real_row = 3 + i
                         self._index.setdefault(ln, []).append((title, real_row))
+
+        # After loading, check whether the workbook has been migrated to the
+        # current column schema. Sets self._needs_migration.
+        self._check_migration_status()
+
+    def _check_migration_status(self):
+        """Read the Template sheet's header row; set _needs_migration accordingly.
+
+        We use the Template as the canary: migrate_sheets_for_cities() always
+        updates Template along with monthly sheets, so if Template is on the
+        new schema, the rest are too. If Template doesn't exist yet (fresh
+        workbook), nothing to migrate — _create_template_sheet builds the new
+        layout from HEADER_IDX directly.
+        """
+        try:
+            template_exists = any(
+                s['properties']['title'] == 'Template'
+                for s in (self.spreadsheet_metadata or {}).get('sheets', [])
+            )
+            if not template_exists:
+                self._needs_migration = False
+                return
+
+            resp = self._execute_with_retry(lambda:
+                self.sheets_service.spreadsheets().values().get(
+                    spreadsheetId=self.spreadsheet_id,
+                    range="'Template'!2:2"
+                ).execute()
+            )
+            header_row = (resp.get('values') or [[]])[0]
+            self._needs_migration = self.HEADER_NAMES['from_city'] not in header_row
+        except Exception:
+            # On any failure (network, permissions), assume migration is fine
+            # to avoid blocking the user on a transient error. The migration
+            # method itself is idempotent if they run it later.
+            self._needs_migration = False
 
     def get_client_email(self) -> str:
         with open(self.CREDS_PATH, 'r') as f:
@@ -223,6 +337,31 @@ class DimeViewModel:
 
     def get_us_states(self):
         return self.US_STATES.copy()
+
+    _cities_cache = None  # class-level so it's shared and only loaded once
+
+    @classmethod
+    def _load_cities(cls):
+        if cls._cities_cache is None:
+            try:
+                with open(cls.CITIES_PATH, 'r') as f:
+                    raw = json.load(f)
+                # Drop metadata keys like "_comment".
+                cls._cities_cache = {k: v for k, v in raw.items() if not k.startswith('_')}
+            except (FileNotFoundError, json.JSONDecodeError):
+                cls._cities_cache = {}
+        return cls._cities_cache
+
+    def get_cities_for_state(self, state_abbr):
+        """Return the city list for a state abbreviation (e.g. 'MD'), or [] if unknown.
+
+        Accepts either a bare abbreviation ('MD') or the UI-format string
+        ('MD: Maryland') and extracts the abbreviation.
+        """
+        if not state_abbr:
+            return []
+        key = state_abbr.split(':')[0].strip().upper()
+        return list(self._load_cities().get(key, []))
     
     def format_state_input(self, state_input: str) -> str:
         """
@@ -307,12 +446,10 @@ class DimeViewModel:
         # 1. Archive to Trash
         self._ensure_trash_sheet()
         
-        # We need to clean the row data to ensure it matches the 12 columns + extra
-        # row_data might have metadata columns at the end, so slice to header length
-        cleaned_row = list(row_data[:12])
-        
-        # Ensure it has 12 columns padded
-        while len(cleaned_row) < 12:
+        # row_data may carry metadata after the data columns; slice + pad to the schema width.
+        num_cols = self._num_data_cols()
+        cleaned_row = list(row_data[:num_cols])
+        while len(cleaned_row) < num_cols:
             cleaned_row.append('')
             
         trash_range = "Trash!A3"
@@ -449,20 +586,20 @@ class DimeViewModel:
         
         # 5. Update the Fraction Row in local cache
         debit_idx = self.HEADER_IDX['debit'] - 1
-        
+
         # Ensure row is long enough
-        while len(fraction_row) < 12:
+        while len(fraction_row) < self._num_data_cols():
             fraction_row.append('')
-            
+
         fraction_row[debit_idx] = str(new_debit)
-        
+
         # Update cache reference
         self._memory_cache[sheet_name_frac]['rows'][list_idx_frac] = fraction_row
-        
+
         # 6. Push Update to Google Sheet
         # Calculate actual row number
         actual_row_num = self._memory_cache[sheet_name_frac]['start_row'] + list_idx_frac
-        range_name = f"'{sheet_name_frac}'!A{actual_row_num}:L{actual_row_num}"
+        range_name = f"'{sheet_name_frac}'!A{actual_row_num}:{self._last_data_col_letter()}{actual_row_num}"
         
         # We send the whole row update
         self._execute_with_retry(lambda: self.sheets_service.spreadsheets().values().update(
@@ -470,6 +607,127 @@ class DimeViewModel:
             range=range_name,
             valueInputOption='USER_ENTERED',
             body={'values': [fraction_row]}
+        ).execute())
+
+    def migrate_sheets_for_cities(self):
+        """One-shot migration: add From City / To City columns to Template and
+        every monthly sheet, and rewrite the (now relocated) summary INDIRECT
+        formulas to point at the new Credit/Debit column letters.
+
+        Idempotent — sheets whose header row 2 already contains 'From City'
+        are skipped, so it's safe to re-run.
+
+        Returns a dict: {'migrated': [...], 'skipped': [...], 'failed': [(title, err), ...]}.
+        """
+        # Refresh metadata so we see the current sheet set.
+        meta = self._execute_with_retry(lambda: self.sheets_service.spreadsheets().get(
+            spreadsheetId=self.spreadsheet_id,
+            includeGridData=False
+        ).execute())
+        self.spreadsheet_metadata = meta
+
+        monthly_pattern = re.compile(r'^[A-Z][a-z]{2}\s\d{4}$')
+        result = {'migrated': [], 'skipped': [], 'failed': []}
+
+        for sheet in meta.get('sheets', []):
+            title = sheet['properties']['title']
+            sheet_id = sheet['properties']['sheetId']
+
+            if title != 'Template' and not monthly_pattern.match(title):
+                continue
+
+            try:
+                resp = self._execute_with_retry(lambda t=title:
+                    self.sheets_service.spreadsheets().values().get(
+                        spreadsheetId=self.spreadsheet_id,
+                        range=f"'{t}'!2:2"
+                    ).execute()
+                )
+                header_row = (resp.get('values') or [[]])[0]
+                if self.HEADER_NAMES['from_city'] in header_row:
+                    result['skipped'].append(title)
+                    continue
+
+                self._migrate_single_sheet(sheet_id)
+                result['migrated'].append(title)
+            except Exception as e:
+                result['failed'].append((title, str(e)))
+
+        # Refresh metadata + re-read sheets so the in-memory cache reflects
+        # the new column layout, and clear the migration-needed flag.
+        if self.spreadsheet_id:
+            self.select_spreadsheet(self.spreadsheet_id)
+
+        return result
+
+    def _migrate_single_sheet(self, sheet_id):
+        """Insert From City and To City columns into one sheet and rewrite
+        its summary formulas. Called by migrate_sheets_for_cities.
+        """
+        from_city_0based = self.HEADER_IDX['from_city'] - 1  # 5
+        to_city_0based = self.HEADER_IDX['to_city'] - 1      # 7
+        credit_col = self._col_letter(self.HEADER_IDX['credit'])
+        debit_col = self._col_letter(self.HEADER_IDX['debit'])
+        summary_start_0based = self._summary_start_col_1based() - 1
+
+        requests = [
+            # Insert From City column (inherits formatting from From State on its left).
+            {
+                'insertDimension': {
+                    'range': {
+                        'sheetId': sheet_id,
+                        'dimension': 'COLUMNS',
+                        'startIndex': from_city_0based,
+                        'endIndex': from_city_0based + 1
+                    },
+                    'inheritFromBefore': True
+                }
+            },
+            # Insert To City column (inherits formatting from the post-shift To State).
+            {
+                'insertDimension': {
+                    'range': {
+                        'sheetId': sheet_id,
+                        'dimension': 'COLUMNS',
+                        'startIndex': to_city_0based,
+                        'endIndex': to_city_0based + 1
+                    },
+                    'inheritFromBefore': True
+                }
+            },
+            # Write the new header cells.
+            {
+                'updateCells': {
+                    'start': {'sheetId': sheet_id, 'rowIndex': 1, 'columnIndex': from_city_0based},
+                    'rows': [{'values': [{'userEnteredValue': {'stringValue': self.HEADER_NAMES['from_city']}}]}],
+                    'fields': 'userEnteredValue'
+                }
+            },
+            {
+                'updateCells': {
+                    'start': {'sheetId': sheet_id, 'rowIndex': 1, 'columnIndex': to_city_0based},
+                    'rows': [{'values': [{'userEnteredValue': {'stringValue': self.HEADER_NAMES['to_city']}}]}],
+                    'fields': 'userEnteredValue'
+                }
+            },
+            # Rewrite the summary INDIRECT formulas to point at the new credit/debit
+            # columns. The Net cell (=N2-O2 → =P2-Q2) auto-updates because its refs
+            # are relative; only the INDIRECT strings need an explicit rewrite.
+            {
+                'updateCells': {
+                    'start': {'sheetId': sheet_id, 'rowIndex': 1, 'columnIndex': summary_start_0based},
+                    'rows': [{'values': [
+                        {'userEnteredValue': {'formulaValue': f'=SUM(INDIRECT("{credit_col}3:{credit_col}200"))'}},
+                        {'userEnteredValue': {'formulaValue': f'=SUM(INDIRECT("{debit_col}3:{debit_col}200"))'}}
+                    ]}],
+                    'fields': 'userEnteredValue'
+                }
+            }
+        ]
+
+        self._execute_with_retry(lambda: self.sheets_service.spreadsheets().batchUpdate(
+            spreadsheetId=self.spreadsheet_id,
+            body={'requests': requests}
         ).execute())
 
     def _create_template_sheet(self):
@@ -486,26 +744,31 @@ class DimeViewModel:
         
         new_sheet_id = response['replies'][0]['addSheet']['properties']['sheetId']
 
-        # Configure formatting and content
-        headers = [
-            'Date', 'Load No.', 'Driver ID', 'Truck ID', 'From State', 'To State',
-            'Transaction', 'Delivery Status', 'Payment Status', 'Credit', 'Debit', 'More Details'
-        ]
-        
+        # Derive all layout coordinates from HEADER_IDX so a single schema
+        # change propagates everywhere.
+        headers = self._headers_in_order()
+        num_cols = self._num_data_cols()
+        credit_col = self._col_letter(self.HEADER_IDX['credit'])
+        debit_col = self._col_letter(self.HEADER_IDX['debit'])
+        summary_start_0based = self._summary_start_col_1based() - 1
+        summary_end_0based = summary_start_0based + len(self.SUMMARY_LABELS)
+        income_cell = f"{self._col_letter(self._summary_start_col_1based())}2"
+        expense_cell = f"{self._col_letter(self._summary_start_col_1based() + 1)}2"
+
         update_requests = []
-        
-        # 1. Merge A1:L1
+
+        # 1. Merge title row across the data columns
         update_requests.append({
             'mergeCells': {
                 'range': {
                     'sheetId': new_sheet_id,
                     'startRowIndex': 0, 'endRowIndex': 1,
-                    'startColumnIndex': 0, 'endColumnIndex': 12
+                    'startColumnIndex': 0, 'endColumnIndex': num_cols
                 },
                 'mergeType': 'MERGE_ALL'
             }
         })
-        
+
         # 2. Main Table Headers and Title
         rows_data = []
         # Row 1 (A1: Merged Title)
@@ -523,24 +786,25 @@ class DimeViewModel:
                 'fields': 'userEnteredValue'
             }
         })
-        
-        # 3. Summary Section Values and Formulas (N1:P2)
+
+        # 3. Summary Section Values and Formulas
+        # INDIRECT keeps the range string-pinned across row deletions; the column
+        # letters inside the strings still derive from HEADER_IDX.
         summary_rows = [
             {'values': [
-                {'userEnteredValue': {'stringValue': 'Total Income'}},
-                {'userEnteredValue': {'stringValue': 'Total Expense'}},
-                {'userEnteredValue': {'stringValue': 'Net'}}
+                {'userEnteredValue': {'stringValue': label}}
+                for label in self.SUMMARY_LABELS
             ]},
             {'values': [
-                {'userEnteredValue': {'formulaValue': '=SUM(INDIRECT("J3:J200"))'}},
-                {'userEnteredValue': {'formulaValue': '=SUM(INDIRECT("K3:K200"))'}},
-                {'userEnteredValue': {'formulaValue': '=N2-O2'}}
+                {'userEnteredValue': {'formulaValue': f'=SUM(INDIRECT("{credit_col}3:{credit_col}200"))'}},
+                {'userEnteredValue': {'formulaValue': f'=SUM(INDIRECT("{debit_col}3:{debit_col}200"))'}},
+                {'userEnteredValue': {'formulaValue': f'={income_cell}-{expense_cell}'}}
             ]}
         ]
-        
+
         update_requests.append({
             'updateCells': {
-                'start': {'sheetId': new_sheet_id, 'rowIndex': 0, 'columnIndex': 13}, # Col N is index 13
+                'start': {'sheetId': new_sheet_id, 'rowIndex': 0, 'columnIndex': summary_start_0based},
                 'rows': summary_rows,
                 'fields': 'userEnteredValue'
             }
@@ -560,27 +824,26 @@ class DimeViewModel:
                 'range': {
                     'sheetId': new_sheet_id,
                     'startRowIndex': 0, 'endRowIndex': 2,
-                    'startColumnIndex': 13, 'endColumnIndex': 16
+                    'startColumnIndex': summary_start_0based, 'endColumnIndex': summary_end_0based
                 },
                 'cell': {'userEnteredFormat': {'backgroundColor': light_yellow, "borders": borders}},
                 'fields': 'userEnteredFormat(backgroundColor,borders)'
             }
         })
 
-        # 5. Borders and Layout for Data Table (A1:L200)
-        # Apply borders to data rows (A2:L200)
+        # 5. Borders for data table body
         update_requests.append({
             'repeatCell': {
                 'range': {
                     'sheetId': new_sheet_id,
                     'startRowIndex': 1, 'endRowIndex': 200,
-                    'startColumnIndex': 0, 'endColumnIndex': 12
+                    'startColumnIndex': 0, 'endColumnIndex': num_cols
                 },
                 'cell': {'userEnteredFormat': {"borders": borders}},
                 'fields': 'userEnteredFormat(borders)'
             }
         })
-        
+
         # Style Title (A1)
         update_requests.append({
              'repeatCell': {
@@ -599,14 +862,14 @@ class DimeViewModel:
                 'fields': 'userEnteredFormat(horizontalAlignment,textFormat,borders)'
             }
         })
-        
+
         # Bold Headers (Row 2)
         update_requests.append({
              'repeatCell': {
                 'range': {
                     'sheetId': new_sheet_id,
                     'startRowIndex': 1, 'endRowIndex': 2,
-                    'startColumnIndex': 0, 'endColumnIndex': 12
+                    'startColumnIndex': 0, 'endColumnIndex': num_cols
                 },
                 'cell': {
                     'userEnteredFormat': {
@@ -662,7 +925,8 @@ class DimeViewModel:
 
     def _propagate_status(
         self, load_no, delivery_status, payment_status,
-        driver_id=None, truck_id=None, from_state=None, to_state=None
+        driver_id=None, truck_id=None, from_state=None, to_state=None,
+        from_city=None, to_city=None
     ):
         updates = []
         
@@ -697,33 +961,47 @@ class DimeViewModel:
             if 0 <= cache_row_idx < len(self._memory_cache[title]['rows']):
                  row = self._memory_cache[title]['rows'][cache_row_idx]
                  
+                 # Pad cached row to current schema width before writing into new slots.
+                 while len(row) < self._num_data_cols():
+                     row.append('')
+
                  # Update memory first
                  if driver_id is not None: row[self.HEADER_IDX['driver_id']-1] = driver_id
                  if truck_id is not None: row[self.HEADER_IDX['truck_id']-1] = truck_id
                  if from_state is not None: row[self.HEADER_IDX['from_state']-1] = from_state
+                 if from_city is not None: row[self.HEADER_IDX['from_city']-1] = from_city
                  if to_state is not None: row[self.HEADER_IDX['to_state']-1] = to_state
-                 
+                 if to_city is not None: row[self.HEADER_IDX['to_city']-1] = to_city
+
                  row[self.HEADER_IDX['delivery_status']-1] = delivery_status
                  row[self.HEADER_IDX['payment_status']-1] = payment_status
                  
                  self._memory_cache[title]['rows'][cache_row_idx] = row
 
-            if any([driver_id, truck_id, from_state, to_state]):
-                vals = [
-                    driver_id or '',
-                    truck_id or '',
-                    from_state or '',
-                    to_state or ''
-                ]
-                updates.append({
-                    'range': f"'{title}'!C{row_num}:F{row_num}",
-                    'values': [vals]
-                })
+            # Per-field writes keyed by HEADER_IDX so this stays correct when
+            # the schema grows (e.g. cities inserted between state columns).
+            identity_fields = [
+                ('driver_id', driver_id),
+                ('truck_id', truck_id),
+                ('from_state', from_state),
+                ('from_city', from_city),
+                ('to_state', to_state),
+                ('to_city', to_city),
+            ]
+            if any(val for _, val in identity_fields):
+                for key, val in identity_fields:
+                    col = self._col_letter(self.HEADER_IDX[key])
+                    updates.append({
+                        'range': f"'{title}'!{col}{row_num}",
+                        'values': [[val or '']]
+                    })
             # 2) Propagate delivery/payment
-            updates.append({
-                'range': f"'{title}'!H{row_num}:I{row_num}",
-                'values': [[delivery_status, payment_status]]
-            })
+            for key, val in (('delivery_status', delivery_status), ('payment_status', payment_status)):
+                col = self._col_letter(self.HEADER_IDX[key])
+                updates.append({
+                    'range': f"'{title}'!{col}{row_num}",
+                    'values': [[val]]
+                })
             
         if updates:
             body = {'valueInputOption': 'USER_ENTERED', 'data': updates}
@@ -841,9 +1119,9 @@ class DimeViewModel:
             pass
         return total_credit
 
-    def _update_fraction_entry(self, load_no, month_title, date_val, driver_id, truck_id, 
-                               from_state, to_state, delivery_status, payment_status, 
-                               fraction_percent, details):
+    def _update_fraction_entry(self, load_no, month_title, date_val, driver_id, truck_id,
+                               from_state, to_state, delivery_status, payment_status,
+                               fraction_percent, details, from_city=None, to_city=None):
         """Update existing Fraction entry or return False if not found."""
         row_num = self._find_fraction_entry_row(load_no, month_title)
         if row_num is None:
@@ -854,26 +1132,29 @@ class DimeViewModel:
             total_credit = self._get_load_total_credit(load_no, month_title)
             new_total_debit = total_credit * (fraction_percent / 100.0)
 
-            # Build the updated fraction row
+            # Build the updated fraction row from a HEADER_IDX-keyed dict so
+            # any future column added picks up an empty default automatically.
             load_cell = load_no if load_no else ''
-            fraction_row = [
-                date_val.strftime('%Y/%m/%d'),
-                load_cell,
-                driver_id or '',
-                truck_id or '',
-                from_state or '',
-                to_state or '',
-                'Fraction',
-                delivery_status,
-                payment_status,
-                '',  # No credit for fraction
-                str(new_total_debit) if new_total_debit else '',  # Debit column
-                details or ''
-            ]
-            
+            fraction_row = self._build_row({
+                'date': date_val.strftime('%Y/%m/%d'),
+                'load_no': load_cell,
+                'driver_id': driver_id or '',
+                'truck_id': truck_id or '',
+                'from_state': from_state or '',
+                'from_city': from_city or '',
+                'to_state': to_state or '',
+                'to_city': to_city or '',
+                'transaction': 'Fraction',
+                'delivery_status': delivery_status,
+                'payment_status': payment_status,
+                'credit': '',
+                'debit': str(new_total_debit) if new_total_debit else '',
+                'details': details or '',
+            })
+
             # Update the row in Google Sheets
             sheet_name = month_title
-            range_name = f"{sheet_name}!A{row_num}:L{row_num}"
+            range_name = f"{sheet_name}!A{row_num}:{self._last_data_col_letter()}{row_num}"
             
             self._execute_with_retry(lambda: self.sheets_service.spreadsheets().values().update(
                 spreadsheetId=self.spreadsheet_id,
@@ -895,8 +1176,16 @@ class DimeViewModel:
     def append_entry(
         self, date, load_no, driver_id, truck_id, from_state, to_state,
         transaction, delivery_status, payment_status,
-        credit_amt, debit_amt, details, fraction_percent=3.5
+        credit_amt, debit_amt, details, fraction_percent=3.5,
+        from_city=None, to_city=None
     ):
+        # Refuse to write if the workbook still uses the pre-cities column
+        # layout. The migration action rewrites Template + monthly sheets.
+        if self._needs_migration:
+            raise SchemaMigrationRequiredError(
+                "This workbook uses the old column layout (no From City / To City). "
+                "Run Tools → Migrate Sheet Structure before adding new entries."
+            )
         # Adjust for two-digit year entries (e.g. '25' -> 2025)
         if date.year < 100:
             date = date.replace(year=date.year + 2000)
@@ -921,21 +1210,23 @@ class DimeViewModel:
             self._duplicate_template(month_title)
         # Prefix Load No. with apostrophe so Sheets treats it as text
         load_cell = f"{load_no}" if load_no else ''
-        # Build row in updated column order A:L
-        row = [
-            date.strftime('%Y/%m/%d'),
-            load_cell,
-            driver_id or '',
-            truck_id or '',
-            from_state or '',
-            to_state or '',
-            transaction,
-            delivery_status,
-            payment_status,
-            str(credit_amt) if credit_amt else '',
-            str(debit_amt) if debit_amt else '',
-            details or ''
-        ]
+        # Build row from a HEADER_IDX-keyed dict; column order comes from the schema.
+        row = self._build_row({
+            'date': date.strftime('%Y/%m/%d'),
+            'load_no': load_cell,
+            'driver_id': driver_id or '',
+            'truck_id': truck_id or '',
+            'from_state': from_state or '',
+            'from_city': from_city or '',
+            'to_state': to_state or '',
+            'to_city': to_city or '',
+            'transaction': transaction,
+            'delivery_status': delivery_status,
+            'payment_status': payment_status,
+            'credit': str(credit_amt) if credit_amt else '',
+            'debit': str(debit_amt) if debit_amt else '',
+            'details': details or '',
+        })
         rng = f"'{month_title}'!A3"
         # Append new entry
         result = self._execute_with_retry(lambda: self.sheets_service.spreadsheets().values().append(
@@ -980,20 +1271,22 @@ class DimeViewModel:
                 # Format details strictly so _recalculate scans it correctly
                 frac_details = f"Fraction {fraction_percent}%"
                 
-                fraction_row = [
-                    date.strftime('%Y/%m/%d'),
-                    load_cell,
-                    driver_id or '',
-                    truck_id or '',
-                    from_state or '',
-                    to_state or '',
-                    'Fraction',
-                    delivery_status,
-                    payment_status,
-                    '',  # Credit
-                    '',  # Debit - to be filled by recalc
-                    frac_details
-                ]
+                fraction_row = self._build_row({
+                    'date': date.strftime('%Y/%m/%d'),
+                    'load_no': load_cell,
+                    'driver_id': driver_id or '',
+                    'truck_id': truck_id or '',
+                    'from_state': from_state or '',
+                    'from_city': from_city or '',
+                    'to_state': to_state or '',
+                    'to_city': to_city or '',
+                    'transaction': 'Fraction',
+                    'delivery_status': delivery_status,
+                    'payment_status': payment_status,
+                    'credit': '',
+                    'debit': '',  # to be filled by recalc
+                    'details': frac_details,
+                })
                 
                 # Use same range as the append above (it just appends to bottom)
                 self._execute_with_retry(lambda: self.sheets_service.spreadsheets().values().append(
@@ -1026,15 +1319,16 @@ class DimeViewModel:
                      # Update details column to reflect new percentage
                      new_details = f"Fraction {fraction_percent}%"
                      
-                     while len(f_row) < 12: f_row.append('')
+                     while len(f_row) < self._num_data_cols(): f_row.append('')
                      f_row[details_idx] = new_details
-                     
+
                      # Update cache
                      self._memory_cache[m_title]['rows'][list_idx] = f_row
-                     
-                     # Update Sheet (Details column is 'L')
+
+                     # Update Sheet — Details column letter derives from HEADER_IDX
                      actual_row_num = self._memory_cache[m_title]['start_row'] + list_idx
-                     u_range = f"'{m_title}'!L{actual_row_num}"
+                     details_col = self._col_letter(self.HEADER_IDX['details'])
+                     u_range = f"'{m_title}'!{details_col}{actual_row_num}"
                      
                      self._execute_with_retry(lambda: self.sheets_service.spreadsheets().values().update(
                         spreadsheetId=self.spreadsheet_id,
@@ -1048,10 +1342,11 @@ class DimeViewModel:
         
         # Propagate statuses for this load_no across all existing entries
         if load_no:
-            # Propagate status + any changed driver/truck/from/to values
+            # Propagate status + any changed driver/truck/from/to values (and cities)
             self._propagate_status(
                 load_no, delivery_status, payment_status,
-                driver_id, truck_id, from_state, to_state
+                driver_id, truck_id, from_state, to_state,
+                from_city=from_city, to_city=to_city
             )
             
             # Also add fraction row to cache index if created
@@ -1140,51 +1435,59 @@ class DimeViewModel:
         
         return 3.5  # Default
 
-    def detect_field_changes(self, latest_entry, driver_id, truck_id, from_state, to_state, delivery_status, payment_status, fraction_percent=None):
+    def detect_field_changes(self, latest_entry, driver_id, truck_id, from_state, to_state,
+                              delivery_status, payment_status, fraction_percent=None,
+                              from_city=None, to_city=None):
         """
         Detect field changes between the latest entry and new values.
         Returns a list of change descriptions.
+
+        Column positions derive from HEADER_IDX so this stays correct across
+        schema changes (e.g. the From City / To City migration).
         """
         changes = []
-        if not latest_entry or len(latest_entry) < 9:
+        if not latest_entry:
             return changes
-        
-        # Extract old values from entry
-        # Row format: [date, load_no, driver_id, truck_id, from_state, to_state,
-        #              transaction, delivery_status, payment_status, credit, debit, fraction, details]
-        old_driver = latest_entry[2] if len(latest_entry) > 2 else ''
-        old_truck = latest_entry[3] if len(latest_entry) > 3 else ''
-        old_from = latest_entry[4] if len(latest_entry) > 4 else ''
-        old_to = latest_entry[5] if len(latest_entry) > 5 else ''
-        old_delivery = latest_entry[7] if len(latest_entry) > 7 else ''
-        old_payment = latest_entry[8] if len(latest_entry) > 8 else ''
-        old_fraction = latest_entry[11] if len(latest_entry) > 11 else ''
-        
-        # Detect changes
+
+        def col(key):
+            idx = self.HEADER_IDX[key] - 1
+            return latest_entry[idx] if idx < len(latest_entry) else ''
+
+        old_driver = col('driver_id')
+        old_truck = col('truck_id')
+        old_from_state = col('from_state')
+        old_from_city = col('from_city')
+        old_to_state = col('to_state')
+        old_to_city = col('to_city')
+        old_delivery = col('delivery_status')
+        old_payment = col('payment_status')
+        old_fraction = col('details')  # fraction percentage lives in the details cell
+
         if driver_id and driver_id != old_driver:
             changes.append(f"Driver ID: {old_driver} → {driver_id}")
         if truck_id and truck_id != old_truck:
             changes.append(f"Truck ID: {old_truck} → {truck_id}")
-        if from_state and from_state != old_from:
-            changes.append(f"From State: {old_from} → {from_state}")
-        if to_state and to_state != old_to:
-            changes.append(f"To State: {old_to} → {to_state}")
+        if from_state and from_state != old_from_state:
+            changes.append(f"From State: {old_from_state} → {from_state}")
+        if from_city and from_city != old_from_city:
+            changes.append(f"From City: {old_from_city} → {from_city}")
+        if to_state and to_state != old_to_state:
+            changes.append(f"To State: {old_to_state} → {to_state}")
+        if to_city and to_city != old_to_city:
+            changes.append(f"To City: {old_to_city} → {to_city}")
         if delivery_status and delivery_status != old_delivery:
             changes.append(f"Delivery Status: {old_delivery} → {delivery_status}")
         if payment_status and payment_status != old_payment:
             changes.append(f"Payment Status: {old_payment} → {payment_status}")
-        
+
         if fraction_percent is not None:
-            # Extract existing fraction percentage from details
-            old_frac_float = 3.5 # Default
+            old_frac_float = 3.5
             match = re.search(r'Fraction\s+(\d+(?:\.\d+)?)%', old_fraction)
             if match:
                 old_frac_float = float(match.group(1))
-            
-            # Compare with epsilon
             if abs(fraction_percent - old_frac_float) > 0.001:
                 changes.append(f"Fraction: {old_frac_float}% → {fraction_percent}%")
-        
+
         return changes
 
     def export_detailed_csv(self, rows, path):
@@ -1489,11 +1792,19 @@ class DimeViewModel:
         ln_idx        = self.HEADER_IDX['load_no']     - 1
         date_idx      = self.HEADER_IDX['date']        - 1
         from_state_idx= self.HEADER_IDX['from_state']  - 1
+        from_city_idx = self.HEADER_IDX['from_city']   - 1
         to_state_idx  = self.HEADER_IDX['to_state']    - 1
+        to_city_idx   = self.HEADER_IDX['to_city']     - 1
         transaction_idx= self.HEADER_IDX['transaction'] - 1
         credit_idx    = self.HEADER_IDX['credit']      - 1
         debit_idx     = self.HEADER_IDX['debit']       - 1
         details_idx   = self.HEADER_IDX['details']     - 1
+
+        def _fmt_leg(state, city):
+            # 'MD,Baltimore' when both present; 'MD' when no city; '' when neither.
+            if state and city:
+                return f"{state},{city}"
+            return state or city or ''
 
         groups = defaultdict(list)
         for row in rows:
@@ -1513,10 +1824,14 @@ class DimeViewModel:
 
             date_val   = rep_row[date_idx]       if len(rep_row) > date_idx       else ''
             from_state = rep_row[from_state_idx] if len(rep_row) > from_state_idx else ''
+            from_city  = rep_row[from_city_idx]  if len(rep_row) > from_city_idx  else ''
             to_state   = rep_row[to_state_idx]   if len(rep_row) > to_state_idx   else ''
+            to_city    = rep_row[to_city_idx]    if len(rep_row) > to_city_idx    else ''
             from_abbr  = from_state.split(':')[0].strip() if from_state else ''
             to_abbr    = to_state.split(':')[0].strip()   if to_state   else ''
-            trip       = f"{from_abbr}-{to_abbr}" if (from_abbr or to_abbr) else ''
+            from_leg   = _fmt_leg(from_abbr, str(from_city).strip())
+            to_leg     = _fmt_leg(to_abbr,   str(to_city).strip())
+            trip       = f"{from_leg}-{to_leg}" if (from_leg or to_leg) else ''
 
             # Line Haul: credit where Transaction == "Full Payment"
             line_haul = sum(
@@ -1686,12 +2001,31 @@ class DimeViewModel:
         def fmt(v):
             return f"${v:,.2f}" if v != 0.0 else "$0.00"
 
+        # Trip column: size to the longest trip string, but cap so the table
+        # still fits 7.5" usable width (letter 8.5" minus 0.5" margins each side).
+        # Cells longer than the cap wrap onto a second line via Paragraph so
+        # "AZ,Lake Havasu City-CA,San Francisco" stays readable instead of
+        # clipping.
+        trip_strings = [r['trip'] for r in report_rows] or ['']
+        max_trip_chars = max([len('Trip')] + [len(t) for t in trip_strings])
+        # 8pt Helvetica ≈ 0.058 inches per char; 0.18" extra for cell padding.
+        trip_width_in = max(0.7, min(1.6, max_trip_chars * 0.058 + 0.18))
+
+        trip_cell_style = ParagraphStyle(
+            'TripCell', parent=styles['Normal'],
+            fontName='Helvetica', fontSize=8, leading=10, alignment=1
+        )
+
+        def _trip_cell(text):
+            # Paragraph lets long trips wrap inside the column without overflow.
+            return Paragraph(str(text), trip_cell_style) if text else ''
+
         table_data = [[f" {h} " for h in pdf_headers]]
         for r in report_rows:
             table_data.append([
                 f" {r['date']} ",
                 f" {r['load_no']} ",
-                f" {r['trip']} ",
+                _trip_cell(r['trip']),
                 f" {fmt(r['line_haul'])} ",
                 f" {fmt(r['other_credit'])} ",
                 f" {fmt(r['fraction_amount'])} ",
@@ -1699,8 +2033,18 @@ class DimeViewModel:
                 f" {fmt(r['total'])} ",
             ])
 
-        # Column widths (inches): Date, Load, Trip, LineHaul, OtherCr, Frac, OtherDeb, Total
-        col_widths = [1.0*inch, 0.65*inch, 0.65*inch, 0.95*inch, 0.95*inch, 0.95*inch, 0.90*inch, 0.95*inch]
+        # Slightly tighter dollar columns leave room for Trip without going wider
+        # than the printable area. Sums to ≤ 7.4" with Trip at its 1.6" max.
+        col_widths = [
+            0.95*inch,            # Date
+            0.65*inch,            # Load No.
+            trip_width_in*inch,   # Trip (dynamic, 0.7–1.6")
+            0.85*inch,            # Line Haul
+            0.85*inch,            # Other Credit
+            0.85*inch,            # Fraction X%
+            0.85*inch,            # Other Debit
+            0.90*inch,            # Total
+        ]
 
         table = Table(table_data, colWidths=col_widths, repeatRows=1)
         table.setStyle(TableStyle([

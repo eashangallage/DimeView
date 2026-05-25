@@ -30,6 +30,7 @@ You get the clean interface of a desktop app with the data safety of Google Driv
 ## 🚀 What it actually does
 
 *   **Google Sheets Sync**: Your data lives in your Google Sheet. If your computer crashes, your data is safe.
+*   **State + City Routing**: Pick the state and the matching city dropdown filters automatically. Over a thousand US cities ship with the app, and you can type in any city that isn't in the list.
 *   **Splits Calculated Automatically**: Tired of figuring out who gets paid what? Set a percentage, and the app handles the debit/credit math for you.
 *   **Reports that make sense**: See exactly how much you made on a load or over a month. [(View Sample PDF)](docs/examples/sample_report.pdf)
 *   **Professional Invoices**: Generate PDFs with your own company logo and footer.
@@ -130,11 +131,34 @@ Want your logo on the PDF reports?
 
 ---
 
+## 🔄 Upgrading from an earlier version
+
+If you used DimeView before `3.2.0`, your workbook needs a one-time
+sheet-structure migration to add the new **From City** and **To City**
+columns. The app handles this for you:
+
+1.  Launch the new version against your existing workbook.
+2.  A dialog will pop up letting you know the workbook is on the old
+    layout. The app will refuse to save new entries until migration
+    completes — this is intentional so your data doesn't land in the
+    wrong columns.
+3.  Open **Tools → Migrate Sheet Structure…** and confirm. The migration
+    inserts the new columns into every monthly sheet (and the Template),
+    leaving historical rows untouched (their city cells are blank) and
+    relocating the summary table from columns N/O/P to P/Q/R.
+4.  The migration is idempotent — safe to re-run if anything is
+    interrupted.
+
+See [CHANGELOG.md](CHANGELOG.md) for the full release notes.
+
+---
+
 ## 📝 Troubleshooting
 
 *   **"dimeview: command not found"**: Did you activate the virtual environment (`source venv/bin/activate`)?
 *   **Google API Error**: Did you put `DimeViewCreds.json` in the `config` folder? Did you share the sheet with the email inside that JSON file?
 *   **PDFs look wrong**: Check your `resources` folder. The app looks for any file ending in `Letterhead.pdf` or `Footer.pdf`.
+*   **"This workbook is using the old column layout"**: You're on a newer DimeView against a pre-3.2 workbook. Run **Tools → Migrate Sheet Structure…** (see "Upgrading" above).
 
 ---
 
