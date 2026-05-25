@@ -1792,11 +1792,19 @@ class DimeViewModel:
         ln_idx        = self.HEADER_IDX['load_no']     - 1
         date_idx      = self.HEADER_IDX['date']        - 1
         from_state_idx= self.HEADER_IDX['from_state']  - 1
+        from_city_idx = self.HEADER_IDX['from_city']   - 1
         to_state_idx  = self.HEADER_IDX['to_state']    - 1
+        to_city_idx   = self.HEADER_IDX['to_city']     - 1
         transaction_idx= self.HEADER_IDX['transaction'] - 1
         credit_idx    = self.HEADER_IDX['credit']      - 1
         debit_idx     = self.HEADER_IDX['debit']       - 1
         details_idx   = self.HEADER_IDX['details']     - 1
+
+        def _fmt_leg(state, city):
+            # 'MD,Baltimore' when both present; 'MD' when no city; '' when neither.
+            if state and city:
+                return f"{state},{city}"
+            return state or city or ''
 
         groups = defaultdict(list)
         for row in rows:
@@ -1816,10 +1824,14 @@ class DimeViewModel:
 
             date_val   = rep_row[date_idx]       if len(rep_row) > date_idx       else ''
             from_state = rep_row[from_state_idx] if len(rep_row) > from_state_idx else ''
+            from_city  = rep_row[from_city_idx]  if len(rep_row) > from_city_idx  else ''
             to_state   = rep_row[to_state_idx]   if len(rep_row) > to_state_idx   else ''
+            to_city    = rep_row[to_city_idx]    if len(rep_row) > to_city_idx    else ''
             from_abbr  = from_state.split(':')[0].strip() if from_state else ''
             to_abbr    = to_state.split(':')[0].strip()   if to_state   else ''
-            trip       = f"{from_abbr}-{to_abbr}" if (from_abbr or to_abbr) else ''
+            from_leg   = _fmt_leg(from_abbr, str(from_city).strip())
+            to_leg     = _fmt_leg(to_abbr,   str(to_city).strip())
+            trip       = f"{from_leg}-{to_leg}" if (from_leg or to_leg) else ''
 
             # Line Haul: credit where Transaction == "Full Payment"
             line_haul = sum(
@@ -1989,12 +2001,31 @@ class DimeViewModel:
         def fmt(v):
             return f"${v:,.2f}" if v != 0.0 else "$0.00"
 
+        # Trip column: size to the longest trip string, but cap so the table
+        # still fits 7.5" usable width (letter 8.5" minus 0.5" margins each side).
+        # Cells longer than the cap wrap onto a second line via Paragraph so
+        # "AZ,Lake Havasu City-CA,San Francisco" stays readable instead of
+        # clipping.
+        trip_strings = [r['trip'] for r in report_rows] or ['']
+        max_trip_chars = max([len('Trip')] + [len(t) for t in trip_strings])
+        # 8pt Helvetica ≈ 0.058 inches per char; 0.18" extra for cell padding.
+        trip_width_in = max(0.7, min(1.6, max_trip_chars * 0.058 + 0.18))
+
+        trip_cell_style = ParagraphStyle(
+            'TripCell', parent=styles['Normal'],
+            fontName='Helvetica', fontSize=8, leading=10, alignment=1
+        )
+
+        def _trip_cell(text):
+            # Paragraph lets long trips wrap inside the column without overflow.
+            return Paragraph(str(text), trip_cell_style) if text else ''
+
         table_data = [[f" {h} " for h in pdf_headers]]
         for r in report_rows:
             table_data.append([
                 f" {r['date']} ",
                 f" {r['load_no']} ",
-                f" {r['trip']} ",
+                _trip_cell(r['trip']),
                 f" {fmt(r['line_haul'])} ",
                 f" {fmt(r['other_credit'])} ",
                 f" {fmt(r['fraction_amount'])} ",
@@ -2002,8 +2033,18 @@ class DimeViewModel:
                 f" {fmt(r['total'])} ",
             ])
 
-        # Column widths (inches): Date, Load, Trip, LineHaul, OtherCr, Frac, OtherDeb, Total
-        col_widths = [1.0*inch, 0.65*inch, 0.65*inch, 0.95*inch, 0.95*inch, 0.95*inch, 0.90*inch, 0.95*inch]
+        # Slightly tighter dollar columns leave room for Trip without going wider
+        # than the printable area. Sums to ≤ 7.4" with Trip at its 1.6" max.
+        col_widths = [
+            0.95*inch,            # Date
+            0.65*inch,            # Load No.
+            trip_width_in*inch,   # Trip (dynamic, 0.7–1.6")
+            0.85*inch,            # Line Haul
+            0.85*inch,            # Other Credit
+            0.85*inch,            # Fraction X%
+            0.85*inch,            # Other Debit
+            0.90*inch,            # Total
+        ]
 
         table = Table(table_data, colWidths=col_widths, repeatRows=1)
         table.setStyle(TableStyle([
