@@ -65,6 +65,18 @@ class GoogleQuotaExceededError(Exception):
     pass
 
 
+class SchemaMigrationRequiredError(Exception):
+    """Raised when an action requires the workbook to be migrated first.
+
+    Step 2 introduced the From City / To City columns. Workbooks created
+    before that change are missing those columns; writing 14-column rows
+    into a 12-column sheet would scramble the data. The migration menu
+    action rewrites every monthly sheet (and the Template) to the new
+    layout. Until that runs, append_entry refuses to write.
+    """
+    pass
+
+
 class DimeViewModel:
     """Handles data logic: Google Sheets API and offline cache."""
 
@@ -76,6 +88,7 @@ class DimeViewModel:
 
     CREDS_PATH = resource_path('config/DimeViewCreds.json')
     CACHE_PATH = resource_path('cache/offline_cache.json')
+    CITIES_PATH = Path(__file__).parent / 'resources' / 'cities.json'
 
     # Column indexes based on updated sheet layout (1-based).
     # This is the single source of truth for monthly-sheet column positions;
@@ -87,13 +100,15 @@ class DimeViewModel:
         'driver_id': 3,
         'truck_id': 4,
         'from_state': 5,
-        'to_state': 6,
-        'transaction': 7,
-        'delivery_status': 8,
-        'payment_status': 9,
-        'credit': 10,
-        'debit': 11,
-        'details': 12
+        'from_city': 6,
+        'to_state': 7,
+        'to_city': 8,
+        'transaction': 9,
+        'delivery_status': 10,
+        'payment_status': 11,
+        'credit': 12,
+        'debit': 13,
+        'details': 14
     }
 
     # Display headers for each HEADER_IDX key (kept in lockstep).
@@ -103,7 +118,9 @@ class DimeViewModel:
         'driver_id': 'Driver ID',
         'truck_id': 'Truck ID',
         'from_state': 'From State',
+        'from_city': 'From City',
         'to_state': 'To State',
+        'to_city': 'To City',
         'transaction': 'Transaction',
         'delivery_status': 'Delivery Status',
         'payment_status': 'Payment Status',
@@ -186,6 +203,8 @@ class DimeViewModel:
         # In-memory, ephemeral cache (cleared on app close)
         self._memory_cache = {}   # { sheet_title: { 'rows': [...], 'start_row': 3 } }
         self._index = {}          # { load_no: [ (sheet_title, row_num), ... ] }
+        # Set by _check_migration_status; if True, append_entry refuses to write.
+        self._needs_migration = False
 
     def _load_credentials(self):
         if not self.CREDS_PATH.exists():
@@ -266,6 +285,42 @@ class DimeViewModel:
                         real_row = 3 + i
                         self._index.setdefault(ln, []).append((title, real_row))
 
+        # After loading, check whether the workbook has been migrated to the
+        # current column schema. Sets self._needs_migration.
+        self._check_migration_status()
+
+    def _check_migration_status(self):
+        """Read the Template sheet's header row; set _needs_migration accordingly.
+
+        We use the Template as the canary: migrate_sheets_for_cities() always
+        updates Template along with monthly sheets, so if Template is on the
+        new schema, the rest are too. If Template doesn't exist yet (fresh
+        workbook), nothing to migrate — _create_template_sheet builds the new
+        layout from HEADER_IDX directly.
+        """
+        try:
+            template_exists = any(
+                s['properties']['title'] == 'Template'
+                for s in (self.spreadsheet_metadata or {}).get('sheets', [])
+            )
+            if not template_exists:
+                self._needs_migration = False
+                return
+
+            resp = self._execute_with_retry(lambda:
+                self.sheets_service.spreadsheets().values().get(
+                    spreadsheetId=self.spreadsheet_id,
+                    range="'Template'!2:2"
+                ).execute()
+            )
+            header_row = (resp.get('values') or [[]])[0]
+            self._needs_migration = self.HEADER_NAMES['from_city'] not in header_row
+        except Exception:
+            # On any failure (network, permissions), assume migration is fine
+            # to avoid blocking the user on a transient error. The migration
+            # method itself is idempotent if they run it later.
+            self._needs_migration = False
+
     def get_client_email(self) -> str:
         with open(self.CREDS_PATH, 'r') as f:
             creds = json.load(f)
@@ -282,6 +337,31 @@ class DimeViewModel:
 
     def get_us_states(self):
         return self.US_STATES.copy()
+
+    _cities_cache = None  # class-level so it's shared and only loaded once
+
+    @classmethod
+    def _load_cities(cls):
+        if cls._cities_cache is None:
+            try:
+                with open(cls.CITIES_PATH, 'r') as f:
+                    raw = json.load(f)
+                # Drop metadata keys like "_comment".
+                cls._cities_cache = {k: v for k, v in raw.items() if not k.startswith('_')}
+            except (FileNotFoundError, json.JSONDecodeError):
+                cls._cities_cache = {}
+        return cls._cities_cache
+
+    def get_cities_for_state(self, state_abbr):
+        """Return the city list for a state abbreviation (e.g. 'MD'), or [] if unknown.
+
+        Accepts either a bare abbreviation ('MD') or the UI-format string
+        ('MD: Maryland') and extracts the abbreviation.
+        """
+        if not state_abbr:
+            return []
+        key = state_abbr.split(':')[0].strip().upper()
+        return list(self._load_cities().get(key, []))
     
     def format_state_input(self, state_input: str) -> str:
         """
@@ -529,6 +609,127 @@ class DimeViewModel:
             body={'values': [fraction_row]}
         ).execute())
 
+    def migrate_sheets_for_cities(self):
+        """One-shot migration: add From City / To City columns to Template and
+        every monthly sheet, and rewrite the (now relocated) summary INDIRECT
+        formulas to point at the new Credit/Debit column letters.
+
+        Idempotent — sheets whose header row 2 already contains 'From City'
+        are skipped, so it's safe to re-run.
+
+        Returns a dict: {'migrated': [...], 'skipped': [...], 'failed': [(title, err), ...]}.
+        """
+        # Refresh metadata so we see the current sheet set.
+        meta = self._execute_with_retry(lambda: self.sheets_service.spreadsheets().get(
+            spreadsheetId=self.spreadsheet_id,
+            includeGridData=False
+        ).execute())
+        self.spreadsheet_metadata = meta
+
+        monthly_pattern = re.compile(r'^[A-Z][a-z]{2}\s\d{4}$')
+        result = {'migrated': [], 'skipped': [], 'failed': []}
+
+        for sheet in meta.get('sheets', []):
+            title = sheet['properties']['title']
+            sheet_id = sheet['properties']['sheetId']
+
+            if title != 'Template' and not monthly_pattern.match(title):
+                continue
+
+            try:
+                resp = self._execute_with_retry(lambda t=title:
+                    self.sheets_service.spreadsheets().values().get(
+                        spreadsheetId=self.spreadsheet_id,
+                        range=f"'{t}'!2:2"
+                    ).execute()
+                )
+                header_row = (resp.get('values') or [[]])[0]
+                if self.HEADER_NAMES['from_city'] in header_row:
+                    result['skipped'].append(title)
+                    continue
+
+                self._migrate_single_sheet(sheet_id)
+                result['migrated'].append(title)
+            except Exception as e:
+                result['failed'].append((title, str(e)))
+
+        # Refresh metadata + re-read sheets so the in-memory cache reflects
+        # the new column layout, and clear the migration-needed flag.
+        if self.spreadsheet_id:
+            self.select_spreadsheet(self.spreadsheet_id)
+
+        return result
+
+    def _migrate_single_sheet(self, sheet_id):
+        """Insert From City and To City columns into one sheet and rewrite
+        its summary formulas. Called by migrate_sheets_for_cities.
+        """
+        from_city_0based = self.HEADER_IDX['from_city'] - 1  # 5
+        to_city_0based = self.HEADER_IDX['to_city'] - 1      # 7
+        credit_col = self._col_letter(self.HEADER_IDX['credit'])
+        debit_col = self._col_letter(self.HEADER_IDX['debit'])
+        summary_start_0based = self._summary_start_col_1based() - 1
+
+        requests = [
+            # Insert From City column (inherits formatting from From State on its left).
+            {
+                'insertDimension': {
+                    'range': {
+                        'sheetId': sheet_id,
+                        'dimension': 'COLUMNS',
+                        'startIndex': from_city_0based,
+                        'endIndex': from_city_0based + 1
+                    },
+                    'inheritFromBefore': True
+                }
+            },
+            # Insert To City column (inherits formatting from the post-shift To State).
+            {
+                'insertDimension': {
+                    'range': {
+                        'sheetId': sheet_id,
+                        'dimension': 'COLUMNS',
+                        'startIndex': to_city_0based,
+                        'endIndex': to_city_0based + 1
+                    },
+                    'inheritFromBefore': True
+                }
+            },
+            # Write the new header cells.
+            {
+                'updateCells': {
+                    'start': {'sheetId': sheet_id, 'rowIndex': 1, 'columnIndex': from_city_0based},
+                    'rows': [{'values': [{'userEnteredValue': {'stringValue': self.HEADER_NAMES['from_city']}}]}],
+                    'fields': 'userEnteredValue'
+                }
+            },
+            {
+                'updateCells': {
+                    'start': {'sheetId': sheet_id, 'rowIndex': 1, 'columnIndex': to_city_0based},
+                    'rows': [{'values': [{'userEnteredValue': {'stringValue': self.HEADER_NAMES['to_city']}}]}],
+                    'fields': 'userEnteredValue'
+                }
+            },
+            # Rewrite the summary INDIRECT formulas to point at the new credit/debit
+            # columns. The Net cell (=N2-O2 → =P2-Q2) auto-updates because its refs
+            # are relative; only the INDIRECT strings need an explicit rewrite.
+            {
+                'updateCells': {
+                    'start': {'sheetId': sheet_id, 'rowIndex': 1, 'columnIndex': summary_start_0based},
+                    'rows': [{'values': [
+                        {'userEnteredValue': {'formulaValue': f'=SUM(INDIRECT("{credit_col}3:{credit_col}200"))'}},
+                        {'userEnteredValue': {'formulaValue': f'=SUM(INDIRECT("{debit_col}3:{debit_col}200"))'}}
+                    ]}],
+                    'fields': 'userEnteredValue'
+                }
+            }
+        ]
+
+        self._execute_with_retry(lambda: self.sheets_service.spreadsheets().batchUpdate(
+            spreadsheetId=self.spreadsheet_id,
+            body={'requests': requests}
+        ).execute())
+
     def _create_template_sheet(self):
         """Creates the Template sheet if it's missing."""
         # Add new sheet properties
@@ -724,7 +925,8 @@ class DimeViewModel:
 
     def _propagate_status(
         self, load_no, delivery_status, payment_status,
-        driver_id=None, truck_id=None, from_state=None, to_state=None
+        driver_id=None, truck_id=None, from_state=None, to_state=None,
+        from_city=None, to_city=None
     ):
         updates = []
         
@@ -759,12 +961,18 @@ class DimeViewModel:
             if 0 <= cache_row_idx < len(self._memory_cache[title]['rows']):
                  row = self._memory_cache[title]['rows'][cache_row_idx]
                  
+                 # Pad cached row to current schema width before writing into new slots.
+                 while len(row) < self._num_data_cols():
+                     row.append('')
+
                  # Update memory first
                  if driver_id is not None: row[self.HEADER_IDX['driver_id']-1] = driver_id
                  if truck_id is not None: row[self.HEADER_IDX['truck_id']-1] = truck_id
                  if from_state is not None: row[self.HEADER_IDX['from_state']-1] = from_state
+                 if from_city is not None: row[self.HEADER_IDX['from_city']-1] = from_city
                  if to_state is not None: row[self.HEADER_IDX['to_state']-1] = to_state
-                 
+                 if to_city is not None: row[self.HEADER_IDX['to_city']-1] = to_city
+
                  row[self.HEADER_IDX['delivery_status']-1] = delivery_status
                  row[self.HEADER_IDX['payment_status']-1] = payment_status
                  
@@ -776,7 +984,9 @@ class DimeViewModel:
                 ('driver_id', driver_id),
                 ('truck_id', truck_id),
                 ('from_state', from_state),
+                ('from_city', from_city),
                 ('to_state', to_state),
+                ('to_city', to_city),
             ]
             if any(val for _, val in identity_fields):
                 for key, val in identity_fields:
@@ -909,9 +1119,9 @@ class DimeViewModel:
             pass
         return total_credit
 
-    def _update_fraction_entry(self, load_no, month_title, date_val, driver_id, truck_id, 
-                               from_state, to_state, delivery_status, payment_status, 
-                               fraction_percent, details):
+    def _update_fraction_entry(self, load_no, month_title, date_val, driver_id, truck_id,
+                               from_state, to_state, delivery_status, payment_status,
+                               fraction_percent, details, from_city=None, to_city=None):
         """Update existing Fraction entry or return False if not found."""
         row_num = self._find_fraction_entry_row(load_no, month_title)
         if row_num is None:
@@ -931,7 +1141,9 @@ class DimeViewModel:
                 'driver_id': driver_id or '',
                 'truck_id': truck_id or '',
                 'from_state': from_state or '',
+                'from_city': from_city or '',
                 'to_state': to_state or '',
+                'to_city': to_city or '',
                 'transaction': 'Fraction',
                 'delivery_status': delivery_status,
                 'payment_status': payment_status,
@@ -964,8 +1176,16 @@ class DimeViewModel:
     def append_entry(
         self, date, load_no, driver_id, truck_id, from_state, to_state,
         transaction, delivery_status, payment_status,
-        credit_amt, debit_amt, details, fraction_percent=3.5
+        credit_amt, debit_amt, details, fraction_percent=3.5,
+        from_city=None, to_city=None
     ):
+        # Refuse to write if the workbook still uses the pre-cities column
+        # layout. The migration action rewrites Template + monthly sheets.
+        if self._needs_migration:
+            raise SchemaMigrationRequiredError(
+                "This workbook uses the old column layout (no From City / To City). "
+                "Run Tools → Migrate Sheet Structure before adding new entries."
+            )
         # Adjust for two-digit year entries (e.g. '25' -> 2025)
         if date.year < 100:
             date = date.replace(year=date.year + 2000)
@@ -997,7 +1217,9 @@ class DimeViewModel:
             'driver_id': driver_id or '',
             'truck_id': truck_id or '',
             'from_state': from_state or '',
+            'from_city': from_city or '',
             'to_state': to_state or '',
+            'to_city': to_city or '',
             'transaction': transaction,
             'delivery_status': delivery_status,
             'payment_status': payment_status,
@@ -1049,20 +1271,22 @@ class DimeViewModel:
                 # Format details strictly so _recalculate scans it correctly
                 frac_details = f"Fraction {fraction_percent}%"
                 
-                fraction_row = [
-                    date.strftime('%Y/%m/%d'),
-                    load_cell,
-                    driver_id or '',
-                    truck_id or '',
-                    from_state or '',
-                    to_state or '',
-                    'Fraction',
-                    delivery_status,
-                    payment_status,
-                    '',  # Credit
-                    '',  # Debit - to be filled by recalc
-                    frac_details
-                ]
+                fraction_row = self._build_row({
+                    'date': date.strftime('%Y/%m/%d'),
+                    'load_no': load_cell,
+                    'driver_id': driver_id or '',
+                    'truck_id': truck_id or '',
+                    'from_state': from_state or '',
+                    'from_city': from_city or '',
+                    'to_state': to_state or '',
+                    'to_city': to_city or '',
+                    'transaction': 'Fraction',
+                    'delivery_status': delivery_status,
+                    'payment_status': payment_status,
+                    'credit': '',
+                    'debit': '',  # to be filled by recalc
+                    'details': frac_details,
+                })
                 
                 # Use same range as the append above (it just appends to bottom)
                 self._execute_with_retry(lambda: self.sheets_service.spreadsheets().values().append(
@@ -1118,10 +1342,11 @@ class DimeViewModel:
         
         # Propagate statuses for this load_no across all existing entries
         if load_no:
-            # Propagate status + any changed driver/truck/from/to values
+            # Propagate status + any changed driver/truck/from/to values (and cities)
             self._propagate_status(
                 load_no, delivery_status, payment_status,
-                driver_id, truck_id, from_state, to_state
+                driver_id, truck_id, from_state, to_state,
+                from_city=from_city, to_city=to_city
             )
             
             # Also add fraction row to cache index if created

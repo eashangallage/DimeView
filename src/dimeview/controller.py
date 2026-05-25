@@ -10,7 +10,7 @@ from datetime import datetime
 from PyQt6.QtWidgets import QApplication, QMessageBox, QCompleter
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject
 from dimeview.view import StartupWindow, MainWindow, LoadingDialog, SharingInstructionsDialog
-from dimeview.model import DimeViewModel, GoogleQuotaExceededError
+from dimeview.model import DimeViewModel, GoogleQuotaExceededError, SchemaMigrationRequiredError
 from googleapiclient.errors import HttpError
 
 
@@ -98,6 +98,22 @@ class EntrySubmitter(QObject):
             self.finished.emit(None)
         except Exception as e:
             self.finished.emit(e)
+
+
+class SchemaMigrator(QObject):
+    """Runs the From City / To City migration in a background thread."""
+    finished = pyqtSignal(object, object)  # result dict or None, error or None
+
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+
+    def run(self):
+        try:
+            result = self.model.migrate_sheets_for_cities()
+            self.finished.emit(result, None)
+        except Exception as e:
+            self.finished.emit(None, e)
 
 
 # --- Controller class ---
@@ -197,9 +213,71 @@ class DimeViewController:
         self.main_window = MainWindow()
         # Update the main window title to include the selected spreadsheet ID
         self.main_window.setWindowTitle(f"DimeView: {self.spreadsheet_name}")
+        self.main_window.action_migrate_schema.triggered.connect(self.handle_migrate_schema)
         self.setup_data_entry_tab()
         self.setup_reports_tab()
+        # If the workbook still has the old column layout, nudge the user.
+        if getattr(self.model, '_needs_migration', False):
+            QMessageBox.warning(
+                self.main_window,
+                "Sheet Migration Needed",
+                "This workbook is using the old column layout (no From City / To City).\n\n"
+                "Run Tools → Migrate Sheet Structure… before adding new entries, "
+                "otherwise saves will be refused."
+            )
         # DO NOT show the main_window here. It will be shown when all data is loaded.
+
+    def handle_migrate_schema(self):
+        """Confirm with the user, then run migrate_sheets_for_cities in a worker."""
+        reply = QMessageBox.question(
+            self.main_window,
+            "Migrate Sheet Structure",
+            "This will add 'From City' and 'To City' columns to the Template and every "
+            "monthly sheet in the active workbook, and update the summary formulas.\n\n"
+            "Historical row values are preserved (new columns are blank for old rows). "
+            "The action is idempotent — sheets already migrated are skipped.\n\n"
+            "Proceed?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        self._migration_loader = LoadingDialog("Migrating sheets… this may take a moment.")
+        self._migration_loader.show()
+
+        self._migration_thread = QThread()
+        self._migration_worker = SchemaMigrator(self.model)
+        self._migration_worker.moveToThread(self._migration_thread)
+        self._migration_thread.started.connect(self._migration_worker.run)
+        self._migration_worker.finished.connect(self._on_migration_finished)
+        self._migration_worker.finished.connect(self._migration_thread.quit)
+        self._migration_worker.finished.connect(self._migration_worker.deleteLater)
+        self._migration_thread.finished.connect(self._migration_thread.deleteLater)
+        self._migration_thread.start()
+
+    def _on_migration_finished(self, result, error):
+        self._migration_loader.close()
+        if error is not None:
+            QMessageBox.critical(
+                self.main_window, "Migration Failed",
+                f"The migration could not complete:\n\n{error}\n\n"
+                "Your workbook may be in a partially-migrated state. "
+                "Re-running the action is safe — it skips sheets that are already done."
+            )
+            return
+        migrated = result.get('migrated', [])
+        skipped = result.get('skipped', [])
+        failed = result.get('failed', [])
+        parts = [
+            f"Migrated: {len(migrated)} sheet(s)",
+            f"Already up to date: {len(skipped)}",
+        ]
+        if failed:
+            parts.append(f"Failed: {len(failed)}")
+            details = "\n".join(f"  • {t}: {err}" for t, err in failed)
+            parts.append(f"\nFailures:\n{details}")
+        QMessageBox.information(self.main_window, "Migration Complete", "\n".join(parts))
 
 
     def setup_data_entry_tab(self):
@@ -479,7 +557,12 @@ class DimeViewController:
     def _on_entry_submitted(self, error):
         self.loading_dialog.close()
         if error:
-            if isinstance(error, GoogleQuotaExceededError):
+            if isinstance(error, SchemaMigrationRequiredError):
+                QMessageBox.warning(
+                    self.main_window, "Migration Needed",
+                    f"{error}\n\nOpen Tools → Migrate Sheet Structure… first."
+                )
+            elif isinstance(error, GoogleQuotaExceededError):
                 QMessageBox.warning(None, "Quota Exceeded",
                                     "Google Sheets API quota exceeded while adding entry. Please wait and try again.")
             elif isinstance(error, HttpError):

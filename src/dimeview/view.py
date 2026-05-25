@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy,QGridLayout, QMessageBox,QApplication
 )
 from PyQt6.QtCore import pyqtSignal, QDate, Qt, QObject, QEvent
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QAction
 from pathlib import Path
 import os
 
@@ -807,3 +807,16 @@ class MainWindow(QMainWindow):
         tabs.addTab(self.data_entry_tab, "Data Entry")
         tabs.addTab(self.reports_tab,    "Reports")
         self.setCentralWidget(tabs)
+        self._build_menu_bar()
+
+    def _build_menu_bar(self):
+        """Build the Tools menu. The action's `triggered` signal is wired up
+        by the controller in setup_main_window().
+        """
+        menu_bar = self.menuBar()
+        tools_menu = menu_bar.addMenu("&Tools")
+        self.action_migrate_schema = QAction("Migrate Sheet Structure…", self)
+        self.action_migrate_schema.setStatusTip(
+            "Add From City / To City columns to existing monthly sheets"
+        )
+        tools_menu.addAction(self.action_migrate_schema)
